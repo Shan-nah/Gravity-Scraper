@@ -6,7 +6,8 @@ const cors      = require('cors');
 const path      = require('path');
 const fs        = require('fs');
 const crypto    = require('crypto');
-const PDFParser = require('pdf2json');
+const { PDFParse }              = require('pdf-parse');
+const { GoogleGenerativeAI }    = require('@google/generative-ai');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -29,6 +30,34 @@ const HEADERS = {
   'Accept-Language': 'en-US,en;q=0.5',
 };
 const CONCURRENCY = 8;
+
+// ── Gemini Flash (optional — set GEMINI_API_KEY env var to activate)
+//    Free tier: 15 RPM, 1 500 req/day — no credit card needed.
+//    Get a key at https://aistudio.google.com/app/apikey
+let geminiModel = null;
+if (process.env.GEMINI_API_KEY) {
+  try {
+    geminiModel = new GoogleGenerativeAI(process.env.GEMINI_API_KEY)
+      .getGenerativeModel({ model: 'gemini-1.5-flash' });
+    console.log('✓  Gemini 1.5 Flash active — bid documents will use LLM extraction\n');
+  } catch (e) {
+    console.warn('Gemini init failed, falling back to rule-based extraction:', e.message);
+  }
+}
+
+const GEMINI_PROMPT = `\
+You are extracting structured data from a government tender or bid document.
+Return ONLY the extracted data — no headings, no commentary, no markdown fences.
+
+Rules:
+• Key-value fields  →  one per line:  Field Name: Value
+• Tables (BOQ, manpower, cost schedules, document lists, etc.)  →  pipe-separated rows:
+    Column A  |  Column B  |  Column C
+    ─────────────────────────────────────
+    row value |  row value |  row value
+• Group related items; leave one blank line between sections.
+• Be exhaustive: capture every field, figure, quantity, rate, date, and condition present.
+• Do NOT summarise or omit any data.`;
 
 function clean(t) { return (t || '').replace(/\s+/g, ' ').trim(); }
 
@@ -292,41 +321,94 @@ function parseDailyDigest($) {
 //  BOQ rows, etc.) is captured as-is and stored in one cell.
 // ══════════════════════════════════════════════════════════════
 
+// ── Gemini path: pass raw PDF bytes directly — no pre-extraction needed
+async function extractPdfWithGemini(pdfArrayBuffer) {
+  if (!geminiModel) return null;
+  try {
+    const result = await geminiModel.generateContent([
+      {
+        inlineData: {
+          mimeType: 'application/pdf',
+          data: Buffer.from(pdfArrayBuffer).toString('base64'),
+        },
+      },
+      GEMINI_PROMPT,
+    ]);
+    const text = result.response.text().trim();
+    return text || null;
+  } catch (e) {
+    // 429 = free-tier rate limit; any other error → fall through to rule-based
+    if (e?.status !== 429) console.warn('Gemini PDF extraction error:', e.message);
+    return null;
+  }
+}
+
+// ── Rule-based fallback using pdf-parse v2 (spatial table detection)
+async function extractPdfRuleBased(pdfArrayBuffer) {
+  let parser;
+  try {
+    parser = new PDFParse({ data: new Uint8Array(pdfArrayBuffer) });
+
+    const [tableResult, textResult] = await Promise.all([
+      parser.getTable().catch(() => ({ pages: [] })),
+      parser.getText(),
+    ]);
+
+    const tableCellTexts = new Set();
+    const tableBlocks    = [];
+
+    for (const page of tableResult.pages) {
+      for (const table of (page.tables || [])) {
+        if (!table?.length) continue;
+        const rows = [];
+        table.forEach((row, rowIdx) => {
+          const cells = row.map(c => (c || '').trim());
+          if (!cells.some(Boolean)) return;
+          cells.forEach(c => { if (c) tableCellTexts.add(c); });
+          const line = cells.join('  |  ');
+          rows.push(line);
+          if (rowIdx === 0) rows.push('─'.repeat(Math.min(line.length, 60)));
+        });
+        if (rows.length) tableBlocks.push(rows.join('\n'));
+      }
+    }
+
+    const seen = new Set(tableCellTexts);
+    const textLines = [];
+    let blankRun = 0;
+
+    for (const rawLine of textResult.text.split('\n')) {
+      const t = rawLine.trim();
+      if (!t || /^\d{1,3}$/.test(t) || /^Page\s+\d+/i.test(t) || seen.has(t)) {
+        if (textLines.length && blankRun < 1) { textLines.push(''); blankRun++; }
+        continue;
+      }
+      blankRun = 0;
+      seen.add(t);
+      textLines.push(rawLine.trimEnd());
+    }
+
+    const sections = [];
+    if (tableBlocks.length) sections.push(tableBlocks.join('\n\n'));
+    const plainText = textLines.join('\n').trim();
+    if (plainText) sections.push(plainText);
+
+    return sections.join('\n\n');
+  } catch { return ''; } finally {
+    if (parser) await parser.destroy().catch(() => {});
+  }
+}
+
 async function parsePdfBidDocument(url) {
   try {
     const { data } = await axios.get(url, { responseType: 'arraybuffer', timeout: 20000, maxRedirects: 4 });
-    return new Promise((resolve) => {
-      try {
-        const pdfParser = new PDFParser(null, 1); // null fixes 'this' bug
-        pdfParser.on('pdfParser_dataError', () => resolve(''));
-        pdfParser.on('pdfParser_dataReady', () => {
-          const raw = pdfParser.getRawTextContent() || '';
-          const out  = [];
-          const seen = new Set();
-          let blankRun = 0;
 
-          for (const rawLine of raw.split(/\r?\n/)) {
-            const line = rawLine.trimEnd();
-            const t    = line.trim();
+    // Gemini first (if API key set) — smarter, understands context
+    const gemini = await extractPdfWithGemini(data);
+    if (gemini) return cleanBidText(gemini);
 
-            // Skip pdf2json page-break separators, standalone page numbers,
-            // single-char noise, and "Page N" / "Page N of M" headers
-            if (!t || /^-{5,}$/.test(t) || /^\d{1,3}$/.test(t) || /^Page\s+\d+/i.test(t)) {
-              if (out.length && blankRun < 1) { out.push(''); blankRun++; }
-              continue;
-            }
-            blankRun = 0;
-
-            if (seen.has(t)) continue;
-            seen.add(t);
-            out.push(line);
-          }
-
-          resolve(cleanBidText(out.join('\n')));
-        });
-        pdfParser.parseBuffer(data);
-      } catch { resolve(''); }
-    });
+    // Rule-based fallback — spatial table detection + text extraction
+    return cleanBidText(await extractPdfRuleBased(data));
   } catch { return ''; }
 }
 
