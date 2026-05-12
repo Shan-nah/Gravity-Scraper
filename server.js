@@ -1,3 +1,4 @@
+require('dotenv').config();
 const express   = require('express');
 const axios     = require('axios');
 const cheerio   = require('cheerio');
@@ -38,7 +39,7 @@ let geminiModel = null;
 if (process.env.GEMINI_API_KEY) {
   try {
     geminiModel = new GoogleGenerativeAI(process.env.GEMINI_API_KEY)
-      .getGenerativeModel({ model: 'gemini-1.5-flash' });
+      .getGenerativeModel({ model: 'gemini-2.5-flash' });
     console.log('✓  Gemini 1.5 Flash active — bid documents will use LLM extraction\n');
   } catch (e) {
     console.warn('Gemini init failed, falling back to rule-based extraction:', e.message);
