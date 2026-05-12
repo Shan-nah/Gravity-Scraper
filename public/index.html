@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Gravity Scraper – Tender Intelligence</title>
+  <meta name="description" content="Extract tender data from TenderDetail and download as Excel."/>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet"/>
+  <style>
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+    :root{
+      --bg:#0b0e1a;--surface:#111527;--card:#161b2e;
+      --border:rgba(99,120,255,.18);--accent:#6378ff;--accent2:#a259ff;
+      --green:#22d387;--red:#ff4d6d;--amber:#f59e0b;
+      --text:#e8eaf6;--muted:#7b82a8;--radius:14px;
+      --shadow:0 8px 40px rgba(0,0,0,.45);
+    }
+    body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;overflow-x:hidden;display:flex;align-items:center;justify-content:center}
+    body::before{content:'';position:fixed;inset:0;
+      background-image:linear-gradient(rgba(99,120,255,.04) 1px,transparent 1px),linear-gradient(90deg,rgba(99,120,255,.04) 1px,transparent 1px);
+      background-size:40px 40px;pointer-events:none;z-index:0}
+    .blob{position:fixed;border-radius:50%;filter:blur(100px);opacity:.13;pointer-events:none;z-index:0;animation:float 8s ease-in-out infinite alternate}
+    .blob-1{width:500px;height:500px;background:var(--accent);top:-180px;left:-120px}
+    .blob-2{width:420px;height:420px;background:var(--accent2);bottom:-120px;right:-100px;animation-delay:-3s}
+    @keyframes float{from{transform:translate(0,0) scale(1)}to{transform:translate(30px,20px) scale(1.05)}}
+
+    .page{position:relative;z-index:1;width:100%;max-width:680px;padding:20px 24px 60px}
+
+    /* Header */
+    header{text-align:center;padding:48px 0 36px}
+    .logo{display:inline-flex;align-items:center;gap:12px;margin-bottom:16px}
+    .logo-icon{width:52px;height:52px;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:14px;display:flex;align-items:center;justify-content:center;font-size:26px;box-shadow:0 0 30px rgba(99,120,255,.45)}
+    .logo-text{font-size:28px;font-weight:800;letter-spacing:-.5px}
+    .logo-text span{background:linear-gradient(90deg,var(--accent),var(--accent2));-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+    .tagline{color:var(--muted);font-size:15px;line-height:1.7;max-width:400px;margin:0 auto}
+
+    /* Card */
+    .card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:28px 28px;margin-bottom:20px;box-shadow:var(--shadow)}
+
+    /* Input */
+    .input-label{display:block;font-size:12px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:10px}
+    #urlInput{width:100%;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px 16px;font-size:15px;color:var(--text);outline:none;transition:border-color .2s,box-shadow .2s;margin-bottom:12px}
+    #urlInput::placeholder{color:var(--muted)}
+    #urlInput:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(99,120,255,.18)}
+
+    /* Buttons */
+    .btn{display:flex;align-items:center;justify-content:center;gap:9px;width:100%;padding:14px;border:none;border-radius:10px;font-size:15px;font-weight:700;cursor:pointer;transition:transform .15s,box-shadow .2s,opacity .2s}
+    .btn:active{transform:scale(.98)}
+    .btn:disabled{opacity:.4;cursor:not-allowed}
+    .btn-primary{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;box-shadow:0 4px 22px rgba(99,120,255,.4)}
+    .btn-primary:not(:disabled):hover{box-shadow:0 6px 32px rgba(99,120,255,.55)}
+
+    /* Status */
+    .status-box{display:none;align-items:center;gap:12px;padding:13px 16px;border-radius:10px;font-size:14px;font-weight:500;margin-top:14px}
+    .status-box.info   {background:rgba(99,120,255,.12);border:1px solid rgba(99,120,255,.25);color:#a5b4ff}
+    .status-box.error  {background:rgba(255,77,109,.12);border:1px solid rgba(255,77,109,.25);color:#ff8fa3}
+    .status-box.success{background:rgba(34,211,135,.12);border:1px solid rgba(34,211,135,.25);color:var(--green)}
+    .spinner{width:16px;height:16px;border:2px solid currentColor;border-top-color:transparent;border-radius:50%;animation:spin .7s linear infinite;flex-shrink:0}
+    @keyframes spin{to{transform:rotate(360deg)}}
+
+    /* Progress card */
+    #progressCard{display:none}
+    .progress-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}
+    .progress-header h3{font-size:15px;font-weight:700;color:var(--text)}
+    .pct-badge{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;padding:3px 12px;border-radius:20px;font-size:13px;font-weight:700}
+    .progress-track{background:var(--surface);border:1px solid var(--border);border-radius:30px;height:9px;overflow:hidden;margin-bottom:10px}
+    .progress-fill{height:100%;border-radius:30px;background:linear-gradient(90deg,var(--accent),var(--accent2));transition:width .4s ease;width:0%}
+    .progress-sub{font-size:12px;color:var(--muted);margin-bottom:16px}
+
+    /* Section pills */
+    .section-pills{display:flex;flex-direction:column;gap:6px;max-height:200px;overflow-y:auto;padding-right:4px}
+    .section-pills::-webkit-scrollbar{width:4px}
+    .section-pills::-webkit-scrollbar-track{background:transparent}
+    .section-pills::-webkit-scrollbar-thumb{background:var(--border);border-radius:4px}
+    .sec-pill{display:flex;align-items:center;gap:10px;padding:8px 12px;background:var(--surface);border:1px solid var(--border);border-radius:8px;font-size:12.5px;color:var(--muted);transition:all .3s}
+    .sec-pill.active{border-color:rgba(99,120,255,.4);color:#a5b4ff}
+    .sec-pill.done  {border-color:rgba(34,211,135,.3);color:var(--green)}
+    .sec-dot{width:7px;height:7px;border-radius:50%;background:var(--border);flex-shrink:0;transition:background .3s}
+    .sec-pill.active .sec-dot{background:var(--accent);animation:pulse 1s ease infinite}
+    .sec-pill.done   .sec-dot{background:var(--green);animation:none}
+    @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+    .sec-count{margin-left:auto;font-size:11px;opacity:.7}
+
+    /* Download card */
+    #downloadCard{display:none}
+    .dl-inner{text-align:center;padding:10px 0}
+    .dl-icon{font-size:52px;margin-bottom:12px}
+    .dl-title{font-size:20px;font-weight:800;margin-bottom:6px}
+    .dl-sub{color:var(--muted);font-size:14px;margin-bottom:24px;line-height:1.6}
+    .dl-stats{display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-bottom:24px}
+    .dl-stat{background:var(--surface);border:1px solid var(--border);border-radius:30px;padding:7px 18px;font-size:13px;color:var(--muted)}
+    .dl-stat strong{color:var(--text)}
+    .btn-download{display:flex;align-items:center;justify-content:center;gap:10px;padding:16px 28px;border-radius:12px;font-size:16px;font-weight:700;cursor:pointer;background:linear-gradient(135deg,var(--green),#16a871);color:#fff;border:none;box-shadow:0 6px 24px rgba(34,211,135,.4);transition:transform .15s,box-shadow .2s;text-decoration:none;width:100%}
+    .btn-download:hover{box-shadow:0 8px 32px rgba(34,211,135,.55);transform:translateY(-1px)}
+    .btn-again{display:block;margin-top:12px;text-align:center;font-size:13px;color:var(--muted);cursor:pointer;text-decoration:underline;text-underline-offset:3px}
+    .btn-again:hover{color:var(--text)}
+
+    footer{text-align:center;font-size:12px;color:var(--muted);margin-top:32px;opacity:.5}
+  </style>
+</head>
+<body>
+<div class="blob blob-1"></div>
+<div class="blob blob-2"></div>
+
+<div class="page">
+  <header>
+    <div class="logo">
+      <div class="logo-icon">🌐</div>
+      <div class="logo-text"><span>Gravity</span> Scraper</div>
+    </div>
+    <p class="tagline">Paste your TenderDetail daily digest URL — we'll extract every tender and build a ready-to-download Excel sheet.</p>
+  </header>
+
+  <!-- Input card -->
+  <div class="card" id="inputCard">
+    <label class="input-label" for="urlInput">🔗 Daily Digest URL</label>
+    <input id="urlInput" type="url" placeholder="https://www.tenderdetail.com/dailytenders/…" autocomplete="off" spellcheck="false"/>
+    <button class="btn btn-primary" id="scrapeBtn" onclick="startScrape()">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
+      Scrape &amp; Generate Excel
+    </button>
+    <div class="status-box" id="statusBox">
+      <div class="spinner" id="spinner"></div>
+      <span id="statusMsg"></span>
+    </div>
+  </div>
+
+  <!-- Progress card -->
+  <div class="card" id="progressCard">
+    <div class="progress-header">
+      <h3>⚡ Extracting Tenders…</h3>
+      <span class="pct-badge" id="pctBadge">0%</span>
+    </div>
+    <div class="progress-track"><div class="progress-fill" id="progressFill"></div></div>
+    <div class="progress-sub" id="progressSub">Starting…</div>
+    <div class="section-pills" id="sectionPills"></div>
+  </div>
+
+  <!-- Download card -->
+  <div class="card" id="downloadCard">
+    <div class="dl-inner">
+      <div class="dl-icon">✅</div>
+      <div class="dl-title">Your Excel is Ready!</div>
+      <div class="dl-sub" id="dlSub">All tenders have been extracted and organized into separate sheets.</div>
+      <div class="dl-stats" id="dlStats"></div>
+      <a class="btn-download" id="downloadLink" href="#" download>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        Download Excel File
+      </a>
+      <span class="btn-again" onclick="resetUI()">↩ Scrape another URL</span>
+    </div>
+  </div>
+
+  <footer>Gravity Scraper &nbsp;·&nbsp; Built for tender intelligence</footer>
+</div>
+
+<script>
+  let currentSSE = null;
+
+  function showStatus(msg, type='info', spin=false) {
+    const box = document.getElementById('statusBox');
+    box.style.display = 'flex';
+    box.className = 'status-box ' + type;
+    document.getElementById('statusMsg').textContent = msg;
+    document.getElementById('spinner').style.display = spin ? 'block' : 'none';
+  }
+
+  function setProgress(done, total, sub) {
+    const pct = total > 0 ? Math.min(100, Math.round((done/total)*100)) : 0;
+    document.getElementById('progressFill').style.width = pct + '%';
+    document.getElementById('pctBadge').textContent     = pct + '%';
+    document.getElementById('progressSub').textContent  = sub || `${done} of ${total} tenders extracted`;
+  }
+
+  function setPill(name, state) { // state: 'pending'|'active'|'done'
+    const id  = 'pill-' + name.replace(/\W+/g,'_');
+    let pill  = document.getElementById(id);
+    if (!pill) {
+      pill = document.createElement('div');
+      pill.id = id;
+      pill.className = 'sec-pill';
+      pill.innerHTML = `<div class="sec-dot"></div><span class="sec-name">${esc(name)}</span><span class="sec-count" id="${id}-cnt"></span>`;
+      document.getElementById('sectionPills').appendChild(pill);
+    }
+    pill.className = 'sec-pill ' + state;
+  }
+
+  async function startScrape() {
+    const url = document.getElementById('urlInput').value.trim();
+    if (!url) { showStatus('Please enter a URL.', 'error'); return; }
+    if (!url.startsWith('http')) { showStatus('URL must start with https://', 'error'); return; }
+
+    if (currentSSE) { currentSSE.close(); currentSSE = null; }
+
+    document.getElementById('scrapeBtn').disabled = true;
+    document.getElementById('downloadCard').style.display  = 'none';
+    document.getElementById('progressCard').style.display  = 'none';
+    document.getElementById('sectionPills').innerHTML = '';
+
+    showStatus('Connecting to server…', 'info', true);
+
+    const sse = new EventSource('/scrape-deep?url=' + encodeURIComponent(url));
+    currentSSE = sse;
+
+    sse.addEventListener('status', e => {
+      const d = JSON.parse(e.data);
+      showStatus(d.message, 'info', true);
+
+      if (d.phase === 2) {
+        // Show progress card, build section pills
+        document.getElementById('progressCard').style.display = 'block';
+        document.getElementById('statusBox').style.display    = 'none';
+        setProgress(0, d.total, 'Fetching tender detail pages…');
+        (d.sections || []).forEach(s => setPill(s.section, 'pending'));
+      }
+      if (d.phase === 3) {
+        setProgress(d.total, d.total, 'Building Excel file…');
+      }
+    });
+
+    sse.addEventListener('section_start', e => {
+      const d = JSON.parse(e.data);
+      setPill(d.section, 'active');
+    });
+
+    sse.addEventListener('progress', e => {
+      const d = JSON.parse(e.data);
+      setProgress(d.globalDone, d.total, `${d.section}: ${d.sectionDone}/${d.sectionTotal}`);
+      // Update count
+      const cntEl = document.getElementById('pill-' + d.section.replace(/\W+/g,'_') + '-cnt');
+      if (cntEl) cntEl.textContent = `${d.sectionDone}/${d.sectionTotal}`;
+    });
+
+    sse.addEventListener('section_done', e => {
+      const d = JSON.parse(e.data);
+      setPill(d.section, 'done');
+      const cntEl = document.getElementById('pill-' + d.section.replace(/\W+/g,'_') + '-cnt');
+      if (cntEl) cntEl.textContent = `✓ ${d.count}`;
+    });
+
+    sse.addEventListener('done', e => {
+      sse.close(); currentSSE = null;
+      const d = JSON.parse(e.data);
+
+      // Hide progress, show download card
+      document.getElementById('progressCard').style.display = 'none';
+      const dlCard = document.getElementById('downloadCard');
+      dlCard.style.display = 'block';
+
+      document.getElementById('dlSub').textContent =
+        `${d.totalTenders} tenders across ${d.sections} sections — each in its own sheet.`;
+
+      document.getElementById('dlStats').innerHTML = `
+        <div class="dl-stat">Sections: <strong>${d.sections}</strong></div>
+        <div class="dl-stat">Tenders: <strong>${d.totalTenders}</strong></div>
+        <div class="dl-stat">Sheets: <strong>${d.sections + 1}</strong></div>`;
+
+      const link = document.getElementById('downloadLink');
+      link.href     = `/download/${d.token}?name=${encodeURIComponent(d.filename)}`;
+      link.download = d.filename + '.xlsx';
+
+      document.getElementById('scrapeBtn').disabled = false;
+    });
+
+    sse.addEventListener('error', e => {
+      try {
+        const d = JSON.parse(e.data);
+        showStatus('❌ ' + d.message, 'error');
+      } catch {
+        showStatus('❌ Connection lost. Please try again.', 'error');
+      }
+      sse.close(); currentSSE = null;
+      document.getElementById('progressCard').style.display = 'none';
+      document.getElementById('scrapeBtn').disabled = false;
+    });
+  }
+
+  function resetUI() {
+    document.getElementById('downloadCard').style.display  = 'none';
+    document.getElementById('progressCard').style.display  = 'none';
+    document.getElementById('statusBox').style.display     = 'none';
+    document.getElementById('sectionPills').innerHTML = '';
+    document.getElementById('scrapeBtn').disabled = false;
+    document.getElementById('urlInput').value = '';
+    document.getElementById('urlInput').focus();
+  }
+
+  function esc(s) {
+    return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  document.getElementById('urlInput').addEventListener('keydown', e => {
+    if (e.key === 'Enter') startScrape();
+  });
+</script>
+</body>
+</html>
