@@ -40,7 +40,7 @@ if (process.env.GEMINI_API_KEY) {
   try {
     geminiModel = new GoogleGenerativeAI(process.env.GEMINI_API_KEY)
       .getGenerativeModel({ model: 'gemini-2.5-flash' });
-    console.log('✓  Gemini 1.5 Flash active — bid documents will use LLM extraction\n');
+    console.log('✓  Gemini 2.5 Flash active — bid documents will use LLM extraction\n');
   } catch (e) {
     console.warn('Gemini init failed, falling back to rule-based extraction:', e.message);
   }
@@ -322,26 +322,33 @@ function parseDailyDigest($) {
 //  BOQ rows, etc.) is captured as-is and stored in one cell.
 // ══════════════════════════════════════════════════════════════
 
-// ── Gemini path: pass raw PDF bytes directly — no pre-extraction needed
-async function extractPdfWithGemini(pdfArrayBuffer) {
+// ── Shared Gemini caller — returns extracted text or null on any failure
+async function callGemini(parts) {
   if (!geminiModel) return null;
   try {
-    const result = await geminiModel.generateContent([
-      {
-        inlineData: {
-          mimeType: 'application/pdf',
-          data: Buffer.from(pdfArrayBuffer).toString('base64'),
-        },
-      },
-      GEMINI_PROMPT,
-    ]);
-    const text = result.response.text().trim();
+    const result = await geminiModel.generateContent(parts);
+    const text   = result.response.text().trim();
     return text || null;
   } catch (e) {
-    // 429 = free-tier rate limit; any other error → fall through to rule-based
-    if (e?.status !== 429) console.warn('Gemini PDF extraction error:', e.message);
+    const code = e?.status ?? e?.message?.match(/\[(\d+)/)?.[1] ?? '???';
+    console.warn(`Gemini error [${code}] — falling back to rule-based`);
     return null;
   }
+}
+
+// ── Gemini path for PDFs: send raw bytes directly, no pre-extraction needed
+async function extractPdfWithGemini(pdfArrayBuffer) {
+  return callGemini([
+    { inlineData: { mimeType: 'application/pdf', data: Buffer.from(pdfArrayBuffer).toString('base64') } },
+    GEMINI_PROMPT,
+  ]);
+}
+
+// ── Gemini path for HTML bid docs: strip markup, send clean text
+async function extractHtmlWithGemini(bodyText) {
+  if (!bodyText?.trim()) return null;
+  // Cap at 30 000 chars to stay within free-tier token limits
+  return callGemini([GEMINI_PROMPT, bodyText.slice(0, 30000)]);
 }
 
 // ── Rule-based fallback using pdf-parse v2 (spatial table detection)
@@ -416,43 +423,40 @@ async function parsePdfBidDocument(url) {
 async function parseHtmlBidDocument(url) {
   try {
     const { data } = await axios.get(url, { headers: HEADERS, timeout: 15000, maxRedirects: 4 });
-    const $ = cheerio.load(data);
+    const $        = cheerio.load(data);
     $('script, style, nav, footer, header').remove();
 
+    // Extract clean body text (used by both Gemini and rule-based paths)
+    const bodyText = $('body').text().replace(/\s{3,}/g, '\n').trim();
+
+    // ── Gemini path (preferred)
+    const gemini = await extractHtmlWithGemini(bodyText);
+    if (gemini) return cleanBidText(gemini);
+
+    // ── Rule-based fallback
     const sections = [];
     const seen     = new Set();
-
-    const addUniq = (arr, line) => {
+    const addUniq  = (arr, line) => {
       const l = line.trimEnd();
       if (!l || l.length < 2 || seen.has(l)) return false;
-      seen.add(l);
-      arr.push(l);
-      return true;
+      seen.add(l); arr.push(l); return true;
     };
 
-    // ── Tables: each table becomes its own block with an optional title line
     $('table').each((_, table) => {
       const $tbl  = $(table);
-      // Try to find a descriptive heading for this table
       const cap   = clean($tbl.find('caption').first().text());
       const prev  = clean($tbl.prevAll('h1,h2,h3,h4,h5,h6,p.heading,.section-title').first().text());
       const title = cap || prev;
-
       const tableLines = [];
       $tbl.find('tr').each((rowIdx, tr) => {
         const cells = [];
         $(tr).find('th, td').each((_, td) => cells.push(clean($(td).text())));
         if (cells.filter(Boolean).length >= 2) {
-          // Wider padding around pipe makes columns easier to scan
           const line = cells.join('  |  ');
           addUniq(tableLines, line);
-          // Add a separator line after the first (header) row
-          if (rowIdx === 0 && tableLines.length) {
-            tableLines.push('─'.repeat(Math.min(line.length, 60)));
-          }
+          if (rowIdx === 0 && tableLines.length) tableLines.push('─'.repeat(Math.min(line.length, 60)));
         }
       });
-
       if (tableLines.length) {
         const block = [];
         if (title) block.push(`▌ ${title}`);
@@ -461,26 +465,23 @@ async function parseHtmlBidDocument(url) {
       }
     });
 
-    // ── Definition lists
-    const dlLines = [];
     $('dl').each((_, dl) => {
+      const dlLines = [];
       $(dl).find('dt').each((_, dt) => {
         const key = clean($(dt).text());
         const val = clean($(dt).next('dd').text());
         if (key && val) addUniq(dlLines, `${key}: ${val}`);
       });
+      if (dlLines.length) sections.push(dlLines.join('\n'));
     });
-    if (dlLines.length) sections.push(dlLines.join('\n'));
 
-    // ── Fallback: consecutive label / value line pairs from body text
     if (!sections.length) {
-      const lines = $('body').text().split('\n').map(l => l.trim()).filter(Boolean);
+      const lines    = bodyText.split('\n').map(l => l.trim()).filter(Boolean);
       const fallback = [];
       for (let i = 0; i < lines.length - 1; i++) {
         const k = lines[i], v = lines[i + 1];
         if (k.length > 3 && k.length < 100 && v && !/^[\d\.]+$/.test(k)) {
-          addUniq(fallback, `${k}: ${v}`);
-          i++;
+          addUniq(fallback, `${k}: ${v}`); i++;
         }
       }
       if (fallback.length) sections.push(fallback.join('\n'));
