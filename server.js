@@ -328,38 +328,52 @@ async function buildExcel(sections) {
   // 1. Important
   makeFilterSheet('Important', 'FFB71C1C', 'B71C1C', 'B', 'Important');
 
-  // 2. Filled — same filter base, plus three extra input columns
-  const filledWs = makeFilterSheet('Filled', 'FF00695C', '00695C', 'B', 'Filled');
-  const filledExtraCols = [
-    { letter: colLetter(masterCols.length + 1), label: 'Filled Date', width: 16 },
-    { letter: colLetter(masterCols.length + 2), label: 'Filled By',   width: 18 },
-    { letter: colLetter(masterCols.length + 3), label: 'Bid Status',  width: 14 },
+  // 2. Filled sheet — three input cols (Filled Date, Filled By, Bid Status) sit
+  //    between Status (col B) and Section (col F). FILTER is split into three
+  //    separate formulas so cols C/D/E remain free for user input:
+  //      A2 = FILTER → Company (single-col spill)
+  //      B2 = FILTER → Status  (single-col spill)
+  //      C/D/E = user-input  (Filled Date, Filled By, Bid Status)
+  //      F2  = FILTER → Section … Additional Details (multi-col spill)
+  const filledWs = wb.addWorksheet(uniqueName('Filled'));
+  filledWs.properties = { tabColor: { argb: 'FF00695C' } };
+  filledWs.views      = [{ state: 'frozen', ySplit: 1, showGridLines: true }];
+
+  const filledSheetCols = [
+    masterCols[0],                                             // A  Company
+    masterCols[1],                                             // B  Status
+    { key: 'Filled Date', label: 'Filled Date', width: 16 },  // C  user input
+    { key: 'Filled By',   label: 'Filled By',   width: 18 },  // D  user input
+    { key: 'Bid Status',  label: 'Bid Status',  width: 14 },  // E  dropdown
+    ...masterCols.slice(2),                                    // F+ Section, TDR …
   ];
-  filledExtraCols.forEach(({ letter, label, width }) => {
-    filledWs.getColumn(letter).width = width;
-    const cell      = filledWs.getCell(`${letter}1`);
-    cell.value      = label;
-    cell.fill       = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF00695C' } };
-    cell.font       = { name: 'Calibri', size: 11, bold: true, italic: true, color: { argb: 'FFFFFFFF' } };
-    cell.alignment  = { vertical: 'middle', horizontal: 'center' };
-    cell.border     = {
-      top: { style: 'medium', color: { argb: 'FF00695C' } },
-      bottom: { style: 'medium', color: { argb: 'FF00695C' } },
-      left: { style: 'thin', color: { argb: 'FFB0C4DE' } },
-      right: { style: 'thin', color: { argb: 'FFB0C4DE' } },
-    };
+  filledWs.columns = filledSheetCols.map(c => ({ header: c.label, key: c.key, width: c.width }));
+
+  const filledHdr  = filledWs.getRow(1);
+  filledHdr.values = filledSheetCols.map(c => c.label);
+  headerStyle(filledHdr, '00695C', filledSheetCols.length);
+  // Italic headers on the three user-input columns (C=3, D=4, E=5)
+  [3, 4, 5].forEach(ci => {
+    filledHdr.getCell(ci).font = { name: 'Calibri', size: 11, bold: true, italic: true, color: { argb: 'FFFFFFFF' } };
   });
-  // Bid Status column: dropdown + conditional formatting (green = Accepted, red = Rejected)
-  const bidStatusCol = colLetter(masterCols.length + 3);
+
+  // FILTER formulas referencing All Sections (B = Status column there)
+  const fCrit = `'All Sections'!B2:B${maxRow}="Filled"`;
+  filledWs.getCell('A2').value = { formula: `IFERROR(FILTER('All Sections'!A2:A${maxRow},${fCrit}),"No tenders marked as Filled")` };
+  filledWs.getCell('B2').value = { formula: `IFERROR(FILTER('All Sections'!B2:B${maxRow},${fCrit}),"")` };
+  // C in All Sections = start of Section and onwards (masterCols index 2)
+  filledWs.getCell('F2').value = { formula: `IFERROR(FILTER('All Sections'!C2:${lastCol}${maxRow},${fCrit}),"")` };
+
+  // Bid Status (col E) — dropdown + green/red conditional formatting
   for (let r = 2; r <= 1002; r++) {
-    filledWs.getCell(`${bidStatusCol}${r}`).dataValidation = {
+    filledWs.getCell(`E${r}`).dataValidation = {
       type: 'list', allowBlank: true,
       formulae: ['"Accepted,Rejected"'],
       showErrorMessage: false,
     };
   }
   filledWs.addConditionalFormatting({
-    ref: `${bidStatusCol}2:${bidStatusCol}1002`,
+    ref: 'E2:E1002',
     rules: [
       {
         type: 'containsText', operator: 'containsText', text: 'Accepted', priority: 1,
