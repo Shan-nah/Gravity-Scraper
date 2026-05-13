@@ -289,11 +289,90 @@ async function buildExcel(sections) {
     { key: 'Section', label: 'Section', width: 28 },
     ...COLS.filter(c => !['Company', 'Status', 'Bid Document Details'].includes(c.key)),
   ];
-  const allRows = sections.flatMap(s => s.tenders.map(t => ({ Section: s.section, ...t })));
-  const allWs   = wb.addWorksheet(uniqueName('All Sections'));
+  const allRows  = sections.flatMap(s => s.tenders.map(t => ({ Section: s.section, ...t })));
+  const lastCol  = colLetter(masterCols.length);
+  const maxRow   = Math.max(allRows.length + 10, 1000);
+  const allWs    = wb.addWorksheet(uniqueName('All Sections'));
   fillDataSheet(allWs, masterCols, allRows, 'FF2C3E50', '2C3E50');
 
-  // ── Per-section sheets — full COLS including Bid Document Details
+  // ── Helper: build a standard linked filter sheet (FILTER formula)
+  function makeFilterSheet(name, tabArgb, hdrHex, filterCol, filterValue) {
+    const ws = wb.addWorksheet(uniqueName(name));
+    ws.properties = { tabColor: { argb: tabArgb } };
+    ws.views      = [{ state: 'frozen', ySplit: 1, showGridLines: true }];
+    ws.columns    = masterCols.map(c => ({ header: c.label, key: c.key, width: c.width }));
+    const hdr     = ws.getRow(1);
+    hdr.values    = masterCols.map(c => c.label);
+    headerStyle(hdr, hdrHex, masterCols.length);
+    const src  = `'All Sections'!A2:${lastCol}${maxRow}`;
+    const crit = `'All Sections'!${filterCol}2:${filterCol}${maxRow}`;
+    ws.getCell('A2').value = {
+      formula: `IFERROR(FILTER(${src},${crit}="${filterValue}"),IF(ROWS(A2:A2)=1,"No tenders assigned to ${name}",""))`,
+    };
+    return ws;
+  }
+
+  // ── Sheet order: All Sections → Important → Filled → Gravity/TT/QM → per-section → Corrigendum
+
+  // 1. Important
+  makeFilterSheet('Important', 'FFB71C1C', 'B71C1C', 'B', 'Important');
+
+  // 2. Filled — same filter base, plus three extra input columns
+  const filledWs = makeFilterSheet('Filled', 'FF00695C', '00695C', 'B', 'Filled');
+  const filledExtraCols = [
+    { letter: colLetter(masterCols.length + 1), label: 'Filled Date', width: 16 },
+    { letter: colLetter(masterCols.length + 2), label: 'Filled By',   width: 18 },
+    { letter: colLetter(masterCols.length + 3), label: 'Bid Status',  width: 14 },
+  ];
+  filledExtraCols.forEach(({ letter, label, width }) => {
+    filledWs.getColumn(letter).width = width;
+    const cell      = filledWs.getCell(`${letter}1`);
+    cell.value      = label;
+    cell.fill       = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF00695C' } };
+    cell.font       = { name: 'Calibri', size: 11, bold: true, italic: true, color: { argb: 'FFFFFFFF' } };
+    cell.alignment  = { vertical: 'middle', horizontal: 'center' };
+    cell.border     = {
+      top: { style: 'medium', color: { argb: 'FF00695C' } },
+      bottom: { style: 'medium', color: { argb: 'FF00695C' } },
+      left: { style: 'thin', color: { argb: 'FFB0C4DE' } },
+      right: { style: 'thin', color: { argb: 'FFB0C4DE' } },
+    };
+  });
+  // Bid Status column: dropdown + conditional formatting (green = Accepted, red = Rejected)
+  const bidStatusCol = colLetter(masterCols.length + 3);
+  for (let r = 2; r <= 1002; r++) {
+    filledWs.getCell(`${bidStatusCol}${r}`).dataValidation = {
+      type: 'list', allowBlank: true,
+      formulae: ['"Accepted,Rejected"'],
+      showErrorMessage: false,
+    };
+  }
+  filledWs.addConditionalFormatting({
+    ref: `${bidStatusCol}2:${bidStatusCol}1002`,
+    rules: [
+      {
+        type: 'containsText', operator: 'containsText', text: 'Accepted', priority: 1,
+        style: {
+          fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF2E7D32' } },
+          font: { name: 'Calibri', size: 10, bold: true, color: { argb: 'FFFFFFFF' } },
+        },
+      },
+      {
+        type: 'containsText', operator: 'containsText', text: 'Rejected', priority: 2,
+        style: {
+          fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFC62828' } },
+          font: { name: 'Calibri', size: 10, bold: true, color: { argb: 'FFFFFFFF' } },
+        },
+      },
+    ],
+  });
+
+  // 3. Company filter sheets
+  makeFilterSheet('Gravity',    'FF1B5E20', '1B5E20', 'A', 'Gravity');
+  makeFilterSheet('Total Tech', 'FF1565C0', '1565C0', 'A', 'Total Tech');
+  makeFilterSheet('Quickman',   'FF4A148C', '4A148C', 'A', 'Quickman');
+
+  // 4. Per-section sheets — full COLS including Bid Document Details
   sections.forEach((sec, idx) => {
     const tabArgb   = TAB_COLORS[idx % TAB_COLORS.length];
     const headerHex = tabArgb.slice(2);
@@ -301,39 +380,7 @@ async function buildExcel(sections) {
     fillDataSheet(ws, COLS, sec.tenders, tabArgb, headerHex);
   });
 
-  // ── Linked filter sheets (Gravity / Total Tech / Quickman / Important / Filled)
-  //    Use Excel FILTER() formula referencing All Sections so changes there
-  //    auto-reflect here. Company is col A, Status is col B in All Sections.
-  const lastCol   = colLetter(masterCols.length);
-  const maxRow    = Math.max(allRows.length + 10, 1000);
-  const sheetMeta = [
-    { name: 'Gravity',    filterCol: 'A', value: 'Gravity',    color: 'FF1B5E20', hdr: '1B5E20' },
-    { name: 'Total Tech', filterCol: 'A', value: 'Total Tech', color: 'FF1565C0', hdr: '1565C0' },
-    { name: 'Quickman',   filterCol: 'A', value: 'Quickman',   color: 'FF4A148C', hdr: '4A148C' },
-    { name: 'Important',  filterCol: 'B', value: 'Important',  color: 'FFB71C1C', hdr: 'B71C1C' },
-    { name: 'Filled',     filterCol: 'B', value: 'Filled',     color: 'FF00695C', hdr: '00695C' },
-  ];
-
-  for (const sm of sheetMeta) {
-    const ws = wb.addWorksheet(sm.name);
-    ws.properties = { tabColor: { argb: sm.color } };
-    ws.views      = [{ state: 'frozen', ySplit: 1, showGridLines: true }];
-    ws.columns    = masterCols.map(c => ({ header: c.label, key: c.key, width: c.width }));
-
-    // Header row
-    const hdr = ws.getRow(1);
-    hdr.values = masterCols.map(c => c.label);
-    headerStyle(hdr, sm.hdr, masterCols.length);
-
-    // FILTER formula — spills all matching rows dynamically when user edits dropdowns
-    const src   = `'All Sections'!A2:${lastCol}${maxRow}`;
-    const crit  = `'All Sections'!${sm.filterCol}2:${sm.filterCol}${maxRow}`;
-    ws.getCell('A2').value = {
-      formula: `IFERROR(FILTER(${src},${crit}="${sm.value}"),IF(ROWS(A2:A2)=1,"No tenders assigned to ${sm.name}",""))`,
-    };
-  }
-
-  // ── Corrigendum sheet — tenders where any field contains "corrigendum"
+  // 5. Corrigendum — only if any tender contains "corrigendum" in any field
   const corrigendumRows = allRows.filter(r =>
     Object.values(r).some(v => typeof v === 'string' && v.toLowerCase().includes('corrigendum'))
   );
