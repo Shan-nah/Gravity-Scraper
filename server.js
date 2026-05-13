@@ -44,6 +44,31 @@ function cleanBidText(text) {
     .trim();
 }
 
+// Convert EMD / Tender Value strings to plain rupee integers.
+// Handles: "2.5 Crores", "50 Lacs", "₹ 1,23,456", "50000/-", "Nil", etc.
+function normalizeAmount(val) {
+  if (!val) return 'N/A';
+  const raw = String(val).trim();
+  if (/^(nil|n\/a|not\s*applicable|na|-|exempt)$/i.test(raw)) return 'N/A';
+  const lo = raw.toLowerCase();
+  // "X crore Y lac" combo
+  const combo = lo.match(/([0-9.]+)\s*crore[s]?\s*(?:and\s*)?([0-9.]+)\s*(?:lac|lakh)/);
+  if (combo) return String(Math.round(+combo[1] * 1e7 + +combo[2] * 1e5));
+  // crore / cr
+  const cr = lo.match(/([0-9.]+)\s*(?:crore[s]?|cr\.?)\b/);
+  if (cr) return String(Math.round(+cr[1] * 1e7));
+  // lac / lakh
+  const lac = lo.match(/([0-9.]+)\s*(?:lac[s]?|lakh[s]?)\b/);
+  if (lac) return String(Math.round(+lac[1] * 1e5));
+  // thousand / k
+  const k = lo.match(/([0-9.]+)\s*(?:thousand|k)\b/);
+  if (k) return String(Math.round(+k[1] * 1e3));
+  // plain number (strip currency symbols, commas, slashes)
+  const num = parseFloat(raw.replace(/[₹$,\s\/-]/g, '').replace(/[^0-9.]/g, ''));
+  if (!isNaN(num) && num > 0) return String(Math.round(num));
+  return val;
+}
+
 // Block private/loopback addresses to prevent SSRF
 function validateUrl(rawUrl) {
   try {
@@ -57,33 +82,34 @@ function validateUrl(rawUrl) {
 
 // ══════════════════════════════════════════════════════════════
 //  EXCEL SCHEMA
-//  Common fields → individual columns with headers.
-//  Variable per-tender data from detail page and bid documents
-//  → two catch-all text columns (one cell per tender, newline-
-//    separated key: value pairs and table rows).
+//  First two columns are user-input dropdowns (Company / Status).
+//  18 fixed scraped fields follow, then two catch-all text cols.
 // ══════════════════════════════════════════════════════════════
 const COLS = [
-  { key: 'TDR', label: 'TDR', width: 14 },
-  { key: 'Tender No', label: 'Tender No', width: 26 },
-  { key: 'Tendering Authority', label: 'Tendering Authority', width: 36 },
-  { key: 'Tender Brief', label: 'Tender Brief', width: 62 },
-  { key: 'City', label: 'City', width: 16 },
-  { key: 'State', label: 'State', width: 18 },
-  { key: 'Document Fees', label: 'Document Fees', width: 16 },
-  { key: 'EMD', label: 'EMD', width: 22 },
-  { key: 'Tender Value', label: 'Tender Value', width: 20 },
-  { key: 'Tender Type', label: 'Tender Type', width: 16 },
-  { key: 'Bidding Type', label: 'Bidding Type', width: 16 },
-  { key: 'Competition Type', label: 'Competition Type', width: 18 },
-  { key: 'Publish Date', label: 'Publish Date', width: 14 },
-  { key: 'Last Date of Bid Submission', label: 'Last Date of Bid Submission', width: 26 },
-  { key: 'Tender Opening Date', label: 'Tender Opening Date', width: 22 },
-  { key: 'Address', label: 'Address', width: 34 },
-  { key: 'Information Source', label: 'Information Source', width: 30 },
-  { key: 'View Link', label: 'View Link', width: 60 },
-  // Variable detail-page fields not covered by the columns above
-  { key: 'Additional Details', label: 'Additional Details', width: 48 },
-  // All data extracted from bid document (HTML or PDF) — varies per tender
+  // ── User-input dropdowns (blank on scrape; filled by user in Excel)
+  { key: 'Company', label: 'Company', width: 16 },
+  { key: 'Status',  label: 'Status',  width: 14 },
+  // ── Fixed scraped fields
+  { key: 'TDR',                         label: 'TDR',                          width: 14 },
+  { key: 'Tender No',                   label: 'Tender No',                    width: 26 },
+  { key: 'Tendering Authority',         label: 'Tendering Authority',          width: 36 },
+  { key: 'Tender Brief',                label: 'Tender Brief',                 width: 62 },
+  { key: 'City',                        label: 'City',                         width: 16 },
+  { key: 'State',                       label: 'State',                        width: 18 },
+  { key: 'Document Fees',               label: 'Document Fees',                width: 16 },
+  { key: 'EMD',                         label: 'EMD (₹)',                      width: 18 },
+  { key: 'Tender Value',                label: 'Tender Value (₹)',             width: 18 },
+  { key: 'Tender Type',                 label: 'Tender Type',                  width: 16 },
+  { key: 'Bidding Type',                label: 'Bidding Type',                 width: 16 },
+  { key: 'Competition Type',            label: 'Competition Type',             width: 18 },
+  { key: 'Publish Date',                label: 'Publish Date',                 width: 14 },
+  { key: 'Last Date of Bid Submission', label: 'Last Date of Bid Submission',  width: 26 },
+  { key: 'Tender Opening Date',         label: 'Tender Opening Date',          width: 22 },
+  { key: 'Address',                     label: 'Address',                      width: 34 },
+  { key: 'Information Source',          label: 'Information Source',           width: 30 },
+  { key: 'View Link',                   label: 'View Link',                    width: 60 },
+  // ── Variable / catch-all
+  { key: 'Additional Details',   label: 'Additional Details',   width: 48 },
   { key: 'Bid Document Details', label: 'Bid Document Details', width: 70 },
 ];
 
@@ -164,17 +190,37 @@ function fillDataSheet(ws, cols, rows, tabArgb, headerColor) {
   });
 
   // Pre-compute column indices used in per-row overrides
-  const linkIdx = cols.findIndex(c => c.key === 'View Link');
-  const addlIdx = cols.findIndex(c => c.key === 'Additional Details');
-  const bidIdx = cols.findIndex(c => c.key === 'Bid Document Details');
+  const linkIdx    = cols.findIndex(c => c.key === 'View Link');
+  const addlIdx    = cols.findIndex(c => c.key === 'Additional Details');
+  const bidIdx     = cols.findIndex(c => c.key === 'Bid Document Details');
+  const companyIdx = cols.findIndex(c => c.key === 'Company');
+  const statusIdx  = cols.findIndex(c => c.key === 'Status');
 
   rows.forEach((r, i) => {
-    const values = cols.map(c => r[c.key] || 'N/A');
-    const row = ws.addRow(values);
+    const values = cols.map(c => r[c.key] ?? '');
+    const row    = ws.addRow(values);
     dataRowStyle(row, i + 1, cols.length);
 
     const h = calcRowHeight(r, cols);
     if (h) row.height = h;
+
+    // Company dropdown — Gravity / Total Tech / Quickman
+    if (companyIdx >= 0) {
+      row.getCell(companyIdx + 1).dataValidation = {
+        type: 'list', allowBlank: true,
+        formulae: ['"Gravity,Total Tech,Quickman"'],
+        showErrorMessage: false,
+      };
+    }
+
+    // Status dropdown — Important / Filled
+    if (statusIdx >= 0) {
+      row.getCell(statusIdx + 1).dataValidation = {
+        type: 'list', allowBlank: true,
+        formulae: ['"Important,Filled"'],
+        showErrorMessage: false,
+      };
+    }
 
     // Hyperlink on View Link column
     if (linkIdx >= 0) {
@@ -189,14 +235,14 @@ function fillDataSheet(ws, cols, rows, tabArgb, headerColor) {
     // Additional Details — compact Calibri, left-aligned, subtle colour
     if (addlIdx >= 0) {
       const cell = row.getCell(addlIdx + 1);
-      cell.font = { name: 'Calibri', size: 9, color: { argb: 'FF1E3A5F' } };
+      cell.font      = { name: 'Calibri', size: 9, color: { argb: 'FF1E3A5F' } };
       cell.alignment = { vertical: 'top', wrapText: true, horizontal: 'left' };
     }
 
-    // Bid Document Details — monospace font so pipe-delimited columns line up
+    // Bid Document Details — monospace so pipe-delimited columns line up
     if (bidIdx >= 0) {
       const cell = row.getCell(bidIdx + 1);
-      cell.font = { name: 'Consolas', size: 9 };
+      cell.font      = { name: 'Consolas', size: 9 };
       cell.alignment = { vertical: 'top', wrapText: true, horizontal: 'left' };
     }
   });
@@ -230,22 +276,71 @@ async function buildExcel(sections) {
     return attempt;
   }
 
-  // Master "All Sections" sheet — summary columns only, no Bid Document Details
+  // Helper: Excel column letter (1→A, 26→Z, 27→AA, …)
+  function colLetter(n) {
+    let r = '';
+    while (n > 0) { n--; r = String.fromCharCode(65 + n % 26) + r; n = Math.floor(n / 26); }
+    return r;
+  }
+
+  // ── Master "All Sections" sheet — Company, Status, Section + fixed cols, no Bid Doc Details
   const masterCols = [
+    ...COLS.filter(c => c.key === 'Company' || c.key === 'Status'),
     { key: 'Section', label: 'Section', width: 28 },
-    ...COLS.filter(c => c.key !== 'Bid Document Details'),
+    ...COLS.filter(c => !['Company', 'Status', 'Bid Document Details'].includes(c.key)),
   ];
-  const allWs   = wb.addWorksheet(uniqueName('All Sections'));
   const allRows = sections.flatMap(s => s.tenders.map(t => ({ Section: s.section, ...t })));
+  const allWs   = wb.addWorksheet(uniqueName('All Sections'));
   fillDataSheet(allWs, masterCols, allRows, 'FF2C3E50', '2C3E50');
 
-  // Per-section sheets — full columns including Bid Document Details
+  // ── Per-section sheets — full COLS including Bid Document Details
   sections.forEach((sec, idx) => {
     const tabArgb   = TAB_COLORS[idx % TAB_COLORS.length];
     const headerHex = tabArgb.slice(2);
     const ws        = wb.addWorksheet(uniqueName(sectionBaseName(sec.section)));
     fillDataSheet(ws, COLS, sec.tenders, tabArgb, headerHex);
   });
+
+  // ── Linked filter sheets (Gravity / Total Tech / Quickman / Important / Filled)
+  //    Use Excel FILTER() formula referencing All Sections so changes there
+  //    auto-reflect here. Company is col A, Status is col B in All Sections.
+  const lastCol   = colLetter(masterCols.length);
+  const maxRow    = Math.max(allRows.length + 10, 1000);
+  const sheetMeta = [
+    { name: 'Gravity',    filterCol: 'A', value: 'Gravity',    color: 'FF1B5E20', hdr: '1B5E20' },
+    { name: 'Total Tech', filterCol: 'A', value: 'Total Tech', color: 'FF1565C0', hdr: '1565C0' },
+    { name: 'Quickman',   filterCol: 'A', value: 'Quickman',   color: 'FF4A148C', hdr: '4A148C' },
+    { name: 'Important',  filterCol: 'B', value: 'Important',  color: 'FFB71C1C', hdr: 'B71C1C' },
+    { name: 'Filled',     filterCol: 'B', value: 'Filled',     color: 'FF00695C', hdr: '00695C' },
+  ];
+
+  for (const sm of sheetMeta) {
+    const ws = wb.addWorksheet(sm.name);
+    ws.properties = { tabColor: { argb: sm.color } };
+    ws.views      = [{ state: 'frozen', ySplit: 1, showGridLines: true }];
+    ws.columns    = masterCols.map(c => ({ header: c.label, key: c.key, width: c.width }));
+
+    // Header row
+    const hdr = ws.getRow(1);
+    hdr.values = masterCols.map(c => c.label);
+    headerStyle(hdr, sm.hdr, masterCols.length);
+
+    // FILTER formula — spills all matching rows dynamically when user edits dropdowns
+    const src   = `'All Sections'!A2:${lastCol}${maxRow}`;
+    const crit  = `'All Sections'!${sm.filterCol}2:${sm.filterCol}${maxRow}`;
+    ws.getCell('A2').value = {
+      formula: `IFERROR(FILTER(${src},${crit}="${sm.value}"),IF(ROWS(A2:A2)=1,"No tenders assigned to ${sm.name}",""))`,
+    };
+  }
+
+  // ── Corrigendum sheet — tenders where any field contains "corrigendum"
+  const corrigendumRows = allRows.filter(r =>
+    Object.values(r).some(v => typeof v === 'string' && v.toLowerCase().includes('corrigendum'))
+  );
+  if (corrigendumRows.length) {
+    const ws = wb.addWorksheet('Corrigendum');
+    fillDataSheet(ws, masterCols, corrigendumRows, 'FFFF6F00', 'E65100');
+  }
 
   return wb.xlsx.writeBuffer();
 }
@@ -466,29 +561,32 @@ async function scrapeTenderDetail(viewLink) {
     else if (pdfLink) bidDocDetails = await parsePdfBidDocument(pdfLink);
 
     return {
-      'TDR': record['TDR'] || 'N/A',
-      'Tender No': record['Tender No'] || record['Tender ID'] || 'N/A',
-      'Tendering Authority': record['Tendering Authority'] || record['Company Name'] || 'N/A',
-      'Tender Brief': record['Tender Brief'] || 'N/A',
-      'City': record['City'] || 'N/A',
-      'State': record['State'] || 'N/A',
-      'Document Fees': record['Document Fees'] || 'N/A',
-      'EMD': record['EMD'] || 'N/A',
-      'Tender Value': record['Tender Value'] || 'N/A',
-      'Tender Type': record['Tender Type'] || 'N/A',
-      'Bidding Type': record['Bidding Type'] || 'N/A',
-      'Competition Type': record['Competition Type'] || 'N/A',
-      'Publish Date': record['Publish Date'] || 'N/A',
-      'Last Date of Bid Submission': record['Last Date of Bid Submission'] || 'N/A',
-      'Tender Opening Date': record['Tender Opening Date'] || 'N/A',
-      'Address': record['Address'] || 'N/A',
-      'Information Source': record['Information Source'] || 'N/A',
-      'View Link': viewLink,
-      'Additional Details': additionalLines.join('\n') || 'N/A',
-      'Bid Document Details': bidDocDetails || 'N/A',
+      'Company': '',
+      'Status':  '',
+      'TDR':                         record['TDR']                                   || 'N/A',
+      'Tender No':                   record['Tender No'] || record['Tender ID']      || 'N/A',
+      'Tendering Authority':         record['Tendering Authority'] || record['Company Name'] || 'N/A',
+      'Tender Brief':                record['Tender Brief']                          || 'N/A',
+      'City':                        record['City']                                  || 'N/A',
+      'State':                       record['State']                                 || 'N/A',
+      'Document Fees':               record['Document Fees']                         || 'N/A',
+      'EMD':                         normalizeAmount(record['EMD']),
+      'Tender Value':                normalizeAmount(record['Tender Value']),
+      'Tender Type':                 record['Tender Type']                           || 'N/A',
+      'Bidding Type':                record['Bidding Type']                          || 'N/A',
+      'Competition Type':            record['Competition Type']                      || 'N/A',
+      'Publish Date':                record['Publish Date']                          || 'N/A',
+      'Last Date of Bid Submission': record['Last Date of Bid Submission']           || 'N/A',
+      'Tender Opening Date':         record['Tender Opening Date']                   || 'N/A',
+      'Address':                     record['Address']                               || 'N/A',
+      'Information Source':          record['Information Source']                    || 'N/A',
+      'View Link':                   viewLink,
+      'Additional Details':          additionalLines.join('\n')                      || 'N/A',
+      'Bid Document Details':        bidDocDetails                                   || 'N/A',
     };
   } catch (e) {
     return {
+      'Company': '', 'Status': '',
       'TDR': 'N/A', 'Tender No': 'N/A', 'Tendering Authority': 'N/A',
       'Tender Brief': `Error: ${e.message}`, 'City': 'N/A', 'State': 'N/A',
       'Document Fees': 'N/A', 'EMD': 'N/A', 'Tender Value': 'N/A',
