@@ -44,7 +44,8 @@ function cleanBidText(text) {
     .trim();
 }
 
-// Convert EMD / Tender Value strings to plain rupee integers.
+// Convert EMD / Tender Value strings to plain rupee integers (JS number type).
+// Returning a number — not a string — is what makes Excel sort numerically.
 // Handles: "2.5 Crores", "50 Lacs", "₹ 1,23,456", "50000/-", "Nil", etc.
 function normalizeAmount(val) {
   if (!val) return 'N/A';
@@ -53,19 +54,19 @@ function normalizeAmount(val) {
   const lo = raw.toLowerCase();
   // "X crore Y lac" combo
   const combo = lo.match(/([0-9.]+)\s*crore[s]?\s*(?:and\s*)?([0-9.]+)\s*(?:lac|lakh)/);
-  if (combo) return String(Math.round(+combo[1] * 1e7 + +combo[2] * 1e5));
+  if (combo) return Math.round(+combo[1] * 1e7 + +combo[2] * 1e5);
   // crore / cr
   const cr = lo.match(/([0-9.]+)\s*(?:crore[s]?|cr\.?)\b/);
-  if (cr) return String(Math.round(+cr[1] * 1e7));
+  if (cr) return Math.round(+cr[1] * 1e7);
   // lac / lakh
   const lac = lo.match(/([0-9.]+)\s*(?:lac[s]?|lakh[s]?)\b/);
-  if (lac) return String(Math.round(+lac[1] * 1e5));
+  if (lac) return Math.round(+lac[1] * 1e5);
   // thousand / k
   const k = lo.match(/([0-9.]+)\s*(?:thousand|k)\b/);
-  if (k) return String(Math.round(+k[1] * 1e3));
+  if (k) return Math.round(+k[1] * 1e3);
   // plain number (strip currency symbols, commas, slashes)
   const num = parseFloat(raw.replace(/[₹$,\s\/-]/g, '').replace(/[^0-9.]/g, ''));
-  if (!isNaN(num) && num > 0) return String(Math.round(num));
+  if (!isNaN(num) && num > 0) return Math.round(num);
   return val;
 }
 
@@ -195,6 +196,8 @@ function fillDataSheet(ws, cols, rows, tabArgb, headerColor) {
   const bidIdx     = cols.findIndex(c => c.key === 'Bid Document Details');
   const companyIdx = cols.findIndex(c => c.key === 'Company');
   const statusIdx  = cols.findIndex(c => c.key === 'Status');
+  const emdIdx     = cols.findIndex(c => c.key === 'EMD');
+  const tvIdx      = cols.findIndex(c => c.key === 'Tender Value');
 
   rows.forEach((r, i) => {
     const values = cols.map(c => r[c.key] ?? '');
@@ -244,6 +247,14 @@ function fillDataSheet(ws, cols, rows, tabArgb, headerColor) {
       const cell = row.getCell(bidIdx + 1);
       cell.font      = { name: 'Consolas', size: 9 };
       cell.alignment = { vertical: 'top', wrapText: true, horizontal: 'left' };
+    }
+
+    // EMD and Tender Value — comma-separated number format so Excel sorts numerically
+    if (emdIdx >= 0 && typeof r['EMD'] === 'number') {
+      row.getCell(emdIdx + 1).numFmt = '#,##0';
+    }
+    if (tvIdx >= 0 && typeof r['Tender Value'] === 'number') {
+      row.getCell(tvIdx + 1).numFmt = '#,##0';
     }
   });
 
