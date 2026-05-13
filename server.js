@@ -1,16 +1,14 @@
-require('dotenv').config();
-const express   = require('express');
-const axios     = require('axios');
-const cheerio   = require('cheerio');
-const ExcelJS   = require('exceljs');
-const cors      = require('cors');
-const path      = require('path');
-const fs        = require('fs');
-const crypto    = require('crypto');
-const { PDFParse }              = require('pdf-parse');
-const { GoogleGenerativeAI }    = require('@google/generative-ai');
+const express  = require('express');
+const axios    = require('axios');
+const cheerio  = require('cheerio');
+const ExcelJS  = require('exceljs');
+const cors     = require('cors');
+const path     = require('path');
+const fs       = require('fs');
+const crypto   = require('crypto');
+const { PDFParse } = require('pdf-parse');
 
-const app  = express();
+const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(cors());
@@ -26,39 +24,12 @@ if (!fs.existsSync(TMP_DIR)) fs.mkdirSync(TMP_DIR);
 cleanOldFiles();
 
 const HEADERS = {
-  'User-Agent':      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-  'Accept':          'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
   'Accept-Language': 'en-US,en;q=0.5',
 };
 const CONCURRENCY = 8;
 
-// ── Gemini Flash (optional — set GEMINI_API_KEY env var to activate)
-//    Free tier: 15 RPM, 1 500 req/day — no credit card needed.
-//    Get a key at https://aistudio.google.com/app/apikey
-let geminiModel = null;
-if (process.env.GEMINI_API_KEY) {
-  try {
-    geminiModel = new GoogleGenerativeAI(process.env.GEMINI_API_KEY)
-      .getGenerativeModel({ model: 'gemini-2.5-flash' });
-    console.log('✓  Gemini 2.5 Flash active — bid documents will use LLM extraction\n');
-  } catch (e) {
-    console.warn('Gemini init failed, falling back to rule-based extraction:', e.message);
-  }
-}
-
-const GEMINI_PROMPT = `\
-You are extracting structured data from a government tender or bid document.
-Return ONLY the extracted data — no headings, no commentary, no markdown fences.
-
-Rules:
-• Key-value fields  →  one per line:  Field Name: Value
-• Tables (BOQ, manpower, cost schedules, document lists, etc.)  →  pipe-separated rows:
-    Column A  |  Column B  |  Column C
-    ─────────────────────────────────────
-    row value |  row value |  row value
-• Group related items; leave one blank line between sections.
-• Be exhaustive: capture every field, figure, quantity, rate, date, and condition present.
-• Do NOT summarise or omit any data.`;
 
 function clean(t) { return (t || '').replace(/\s+/g, ' ').trim(); }
 
@@ -92,28 +63,28 @@ function validateUrl(rawUrl) {
 //    separated key: value pairs and table rows).
 // ══════════════════════════════════════════════════════════════
 const COLS = [
-  { key: 'TDR',                         label: 'TDR',                          width: 14 },
-  { key: 'Tender No',                   label: 'Tender No',                    width: 26 },
-  { key: 'Tendering Authority',         label: 'Tendering Authority',          width: 36 },
-  { key: 'Tender Brief',                label: 'Tender Brief',                 width: 62 },
-  { key: 'City',                        label: 'City',                         width: 16 },
-  { key: 'State',                       label: 'State',                        width: 18 },
-  { key: 'Document Fees',               label: 'Document Fees',                width: 16 },
-  { key: 'EMD',                         label: 'EMD',                          width: 22 },
-  { key: 'Tender Value',                label: 'Tender Value',                 width: 20 },
-  { key: 'Tender Type',                 label: 'Tender Type',                  width: 16 },
-  { key: 'Bidding Type',                label: 'Bidding Type',                 width: 16 },
-  { key: 'Competition Type',            label: 'Competition Type',             width: 18 },
-  { key: 'Publish Date',                label: 'Publish Date',                 width: 14 },
-  { key: 'Last Date of Bid Submission', label: 'Last Date of Bid Submission',  width: 26 },
-  { key: 'Tender Opening Date',         label: 'Tender Opening Date',          width: 22 },
-  { key: 'Address',                     label: 'Address',                      width: 34 },
-  { key: 'Information Source',          label: 'Information Source',           width: 30 },
-  { key: 'View Link',                   label: 'View Link',                    width: 60 },
+  { key: 'TDR', label: 'TDR', width: 14 },
+  { key: 'Tender No', label: 'Tender No', width: 26 },
+  { key: 'Tendering Authority', label: 'Tendering Authority', width: 36 },
+  { key: 'Tender Brief', label: 'Tender Brief', width: 62 },
+  { key: 'City', label: 'City', width: 16 },
+  { key: 'State', label: 'State', width: 18 },
+  { key: 'Document Fees', label: 'Document Fees', width: 16 },
+  { key: 'EMD', label: 'EMD', width: 22 },
+  { key: 'Tender Value', label: 'Tender Value', width: 20 },
+  { key: 'Tender Type', label: 'Tender Type', width: 16 },
+  { key: 'Bidding Type', label: 'Bidding Type', width: 16 },
+  { key: 'Competition Type', label: 'Competition Type', width: 18 },
+  { key: 'Publish Date', label: 'Publish Date', width: 14 },
+  { key: 'Last Date of Bid Submission', label: 'Last Date of Bid Submission', width: 26 },
+  { key: 'Tender Opening Date', label: 'Tender Opening Date', width: 22 },
+  { key: 'Address', label: 'Address', width: 34 },
+  { key: 'Information Source', label: 'Information Source', width: 30 },
+  { key: 'View Link', label: 'View Link', width: 60 },
   // Variable detail-page fields not covered by the columns above
-  { key: 'Additional Details',          label: 'Additional Details',           width: 48 },
+  { key: 'Additional Details', label: 'Additional Details', width: 48 },
   // All data extracted from bid document (HTML or PDF) — varies per tender
-  { key: 'Bid Document Details',        label: 'Bid Document Details',         width: 70 },
+  { key: 'Bid Document Details', label: 'Bid Document Details', width: 70 },
 ];
 
 // Columns whose values may contain \n — used for row-height calculation
@@ -133,14 +104,14 @@ function headerStyle(row, colorHex, colCount) {
   row.height = 26;
   for (let c = 1; c <= colCount; c++) {
     const cell = row.getCell(c);
-    cell.fill      = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF' + colorHex } };
-    cell.font      = { name: 'Calibri', size: 11, bold: true, color: { argb: 'FFFFFFFF' } };
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF' + colorHex } };
+    cell.font = { name: 'Calibri', size: 11, bold: true, color: { argb: 'FFFFFFFF' } };
     cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: false };
-    cell.border    = {
-      top:    { style: 'medium', color: { argb: 'FF' + colorHex } },
+    cell.border = {
+      top: { style: 'medium', color: { argb: 'FF' + colorHex } },
       bottom: { style: 'medium', color: { argb: 'FF' + colorHex } },
-      left:   { style: 'thin',   color: { argb: 'FFB0C4DE' } },
-      right:  { style: 'thin',   color: { argb: 'FFB0C4DE' } },
+      left: { style: 'thin', color: { argb: 'FFB0C4DE' } },
+      right: { style: 'thin', color: { argb: 'FFB0C4DE' } },
     };
   }
 }
@@ -149,14 +120,14 @@ function dataRowStyle(row, rowIdx, colCount) {
   const bg = rowIdx % 2 === 0 ? 'FFEAF4FB' : 'FFFFFFFF';
   for (let c = 1; c <= colCount; c++) {
     const cell = row.getCell(c);
-    cell.fill      = { type: 'pattern', pattern: 'solid', fgColor: { argb: bg } };
-    cell.font      = { name: 'Calibri', size: 10 };
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bg } };
+    cell.font = { name: 'Calibri', size: 10 };
     cell.alignment = { vertical: 'top', wrapText: true };
-    cell.border    = {
-      top:    { style: 'hair', color: { argb: 'FFCCE0F5' } },
+    cell.border = {
+      top: { style: 'hair', color: { argb: 'FFCCE0F5' } },
       bottom: { style: 'hair', color: { argb: 'FFCCE0F5' } },
-      left:   { style: 'thin', color: { argb: 'FFCCE0F5' } },
-      right:  { style: 'thin', color: { argb: 'FFCCE0F5' } },
+      left: { style: 'thin', color: { argb: 'FFCCE0F5' } },
+      right: { style: 'thin', color: { argb: 'FFCCE0F5' } },
     };
   }
 }
@@ -178,8 +149,8 @@ function calcRowHeight(r, cols) {
 // ══════════════════════════════════════════════════════════════
 function fillDataSheet(ws, cols, rows, tabArgb, headerColor) {
   ws.properties = { tabColor: { argb: tabArgb } };
-  ws.views      = [{ state: 'frozen', ySplit: 1, showGridLines: true }];
-  ws.columns    = cols.map(c => ({ header: c.label, key: c.key, width: c.width }));
+  ws.views = [{ state: 'frozen', ySplit: 1, showGridLines: true }];
+  ws.columns = cols.map(c => ({ header: c.label, key: c.key, width: c.width }));
 
   const hdr = ws.getRow(1);
   hdr.values = cols.map(c => c.label);
@@ -195,11 +166,11 @@ function fillDataSheet(ws, cols, rows, tabArgb, headerColor) {
   // Pre-compute column indices used in per-row overrides
   const linkIdx = cols.findIndex(c => c.key === 'View Link');
   const addlIdx = cols.findIndex(c => c.key === 'Additional Details');
-  const bidIdx  = cols.findIndex(c => c.key === 'Bid Document Details');
+  const bidIdx = cols.findIndex(c => c.key === 'Bid Document Details');
 
   rows.forEach((r, i) => {
     const values = cols.map(c => r[c.key] || 'N/A');
-    const row    = ws.addRow(values);
+    const row = ws.addRow(values);
     dataRowStyle(row, i + 1, cols.length);
 
     const h = calcRowHeight(r, cols);
@@ -211,28 +182,28 @@ function fillDataSheet(ws, cols, rows, tabArgb, headerColor) {
       const href = r['View Link'];
       if (href && href.startsWith('http')) {
         cell.value = { text: 'View Tender', hyperlink: href };
-        cell.font  = { name: 'Calibri', size: 10, color: { argb: 'FF1565C0' }, underline: true };
+        cell.font = { name: 'Calibri', size: 10, color: { argb: 'FF1565C0' }, underline: true };
       }
     }
 
     // Additional Details — compact Calibri, left-aligned, subtle colour
     if (addlIdx >= 0) {
-      const cell       = row.getCell(addlIdx + 1);
-      cell.font        = { name: 'Calibri', size: 9, color: { argb: 'FF1E3A5F' } };
-      cell.alignment   = { vertical: 'top', wrapText: true, horizontal: 'left' };
+      const cell = row.getCell(addlIdx + 1);
+      cell.font = { name: 'Calibri', size: 9, color: { argb: 'FF1E3A5F' } };
+      cell.alignment = { vertical: 'top', wrapText: true, horizontal: 'left' };
     }
 
     // Bid Document Details — monospace font so pipe-delimited columns line up
     if (bidIdx >= 0) {
-      const cell       = row.getCell(bidIdx + 1);
-      cell.font        = { name: 'Consolas', size: 9 };
-      cell.alignment   = { vertical: 'top', wrapText: true, horizontal: 'left' };
+      const cell = row.getCell(bidIdx + 1);
+      cell.font = { name: 'Consolas', size: 9 };
+      cell.alignment = { vertical: 'top', wrapText: true, horizontal: 'left' };
     }
   });
 
   ws.autoFilter = {
     from: { row: 1, column: 1 },
-    to:   { row: 1 + rows.length, column: cols.length },
+    to: { row: 1 + rows.length, column: cols.length },
   };
 }
 
@@ -241,9 +212,9 @@ function fillDataSheet(ws, cols, rows, tabArgb, headerColor) {
 // ══════════════════════════════════════════════════════════════
 async function buildExcel(sections) {
   const wb = new ExcelJS.Workbook();
-  wb.creator  = 'Gravity Scraper';
-  wb.company  = 'Gravity';
-  wb.created  = new Date();
+  wb.creator = 'Gravity Scraper';
+  wb.company = 'Gravity';
+  wb.created = new Date();
   wb.modified = new Date();
 
   const usedNames = new Set();
@@ -251,21 +222,24 @@ async function buildExcel(sections) {
     return raw.replace(/\(\d+\)\s*$/, '').replace(/[\\/:?*[\]]/g, '').trim();
   }
   function uniqueName(raw) {
-    let base    = raw.replace(/[\\/:?*[\]]/g, '_').trim().slice(0, 31);
+    let base = raw.replace(/[\\/:?*[\]]/g, '_').trim().slice(0, 31);
     let attempt = base;
-    let n       = 2;
+    let n = 2;
     while (usedNames.has(attempt.toLowerCase())) attempt = base.slice(0, 28) + '_' + (n++);
     usedNames.add(attempt.toLowerCase());
     return attempt;
   }
 
-  // Combined "All Sections" sheet with a leading Section column
+  // Master "All Sections" sheet — summary columns only, no Bid Document Details
+  const masterCols = [
+    { key: 'Section', label: 'Section', width: 28 },
+    ...COLS.filter(c => c.key !== 'Bid Document Details'),
+  ];
   const allWs   = wb.addWorksheet(uniqueName('All Sections'));
-  const allCols = [{ key: 'Section', label: 'Section', width: 28 }, ...COLS];
   const allRows = sections.flatMap(s => s.tenders.map(t => ({ Section: s.section, ...t })));
-  fillDataSheet(allWs, allCols, allRows, 'FF2C3E50', '2C3E50');
+  fillDataSheet(allWs, masterCols, allRows, 'FF2C3E50', '2C3E50');
 
-  // Per-section sheets
+  // Per-section sheets — full columns including Bid Document Details
   sections.forEach((sec, idx) => {
     const tabArgb   = TAB_COLORS[idx % TAB_COLORS.length];
     const headerHex = tabArgb.slice(2);
@@ -322,40 +296,11 @@ function parseDailyDigest($) {
 //  BOQ rows, etc.) is captured as-is and stored in one cell.
 // ══════════════════════════════════════════════════════════════
 
-// ── Shared Gemini caller — returns extracted text or null on any failure
-async function callGemini(parts) {
-  if (!geminiModel) return null;
-  try {
-    const result = await geminiModel.generateContent(parts);
-    const text   = result.response.text().trim();
-    return text || null;
-  } catch (e) {
-    const code = e?.status ?? e?.message?.match(/\[(\d+)/)?.[1] ?? '???';
-    console.warn(`Gemini error [${code}] — falling back to rule-based`);
-    return null;
-  }
-}
-
-// ── Gemini path for PDFs: send raw bytes directly, no pre-extraction needed
-async function extractPdfWithGemini(pdfArrayBuffer) {
-  return callGemini([
-    { inlineData: { mimeType: 'application/pdf', data: Buffer.from(pdfArrayBuffer).toString('base64') } },
-    GEMINI_PROMPT,
-  ]);
-}
-
-// ── Gemini path for HTML bid docs: strip markup, send clean text
-async function extractHtmlWithGemini(bodyText) {
-  if (!bodyText?.trim()) return null;
-  // Cap at 30 000 chars to stay within free-tier token limits
-  return callGemini([GEMINI_PROMPT, bodyText.slice(0, 30000)]);
-}
-
-// ── Rule-based fallback using pdf-parse v2 (spatial table detection)
-async function extractPdfRuleBased(pdfArrayBuffer) {
+async function parsePdfBidDocument(url) {
   let parser;
   try {
-    parser = new PDFParse({ data: new Uint8Array(pdfArrayBuffer) });
+    const { data } = await axios.get(url, { responseType: 'arraybuffer', timeout: 20000, maxRedirects: 4 });
+    parser = new PDFParse({ data: new Uint8Array(data) });
 
     const [tableResult, textResult] = await Promise.all([
       parser.getTable().catch(() => ({ pages: [] })),
@@ -401,23 +346,10 @@ async function extractPdfRuleBased(pdfArrayBuffer) {
     const plainText = textLines.join('\n').trim();
     if (plainText) sections.push(plainText);
 
-    return sections.join('\n\n');
+    return cleanBidText(sections.join('\n\n'));
   } catch { return ''; } finally {
     if (parser) await parser.destroy().catch(() => {});
   }
-}
-
-async function parsePdfBidDocument(url) {
-  try {
-    const { data } = await axios.get(url, { responseType: 'arraybuffer', timeout: 20000, maxRedirects: 4 });
-
-    // Gemini first (if API key set) — smarter, understands context
-    const gemini = await extractPdfWithGemini(data);
-    if (gemini) return cleanBidText(gemini);
-
-    // Rule-based fallback — spatial table detection + text extraction
-    return cleanBidText(await extractPdfRuleBased(data));
-  } catch { return ''; }
 }
 
 async function parseHtmlBidDocument(url) {
@@ -426,17 +358,11 @@ async function parseHtmlBidDocument(url) {
     const $        = cheerio.load(data);
     $('script, style, nav, footer, header').remove();
 
-    // Extract clean body text (used by both Gemini and rule-based paths)
     const bodyText = $('body').text().replace(/\s{3,}/g, '\n').trim();
-
-    // ── Gemini path (preferred)
-    const gemini = await extractHtmlWithGemini(bodyText);
-    if (gemini) return cleanBidText(gemini);
-
-    // ── Rule-based fallback
     const sections = [];
     const seen     = new Set();
-    const addUniq  = (arr, line) => {
+
+    const addUniq = (arr, line) => {
       const l = line.trimEnd();
       if (!l || l.length < 2 || seen.has(l)) return false;
       seen.add(l); arr.push(l); return true;
@@ -531,35 +457,35 @@ async function scrapeTenderDetail(viewLink) {
       const href = $(a).attr('href') || '';
       if (href.includes('tenderfiles.com')) {
         if (!htmlLink && href.endsWith('.html')) htmlLink = href;
-        if (!pdfLink  && href.endsWith('.pdf'))  pdfLink  = href;
+        if (!pdfLink && href.endsWith('.pdf')) pdfLink = href;
       }
     });
 
     let bidDocDetails = '';
-    if (htmlLink)     bidDocDetails = await parseHtmlBidDocument(htmlLink);
+    if (htmlLink) bidDocDetails = await parseHtmlBidDocument(htmlLink);
     else if (pdfLink) bidDocDetails = await parsePdfBidDocument(pdfLink);
 
     return {
-      'TDR':                         record['TDR']                                   || 'N/A',
-      'Tender No':                   record['Tender No'] || record['Tender ID']      || 'N/A',
-      'Tendering Authority':         record['Tendering Authority'] || record['Company Name'] || 'N/A',
-      'Tender Brief':                record['Tender Brief']                          || 'N/A',
-      'City':                        record['City']                                  || 'N/A',
-      'State':                       record['State']                                 || 'N/A',
-      'Document Fees':               record['Document Fees']                         || 'N/A',
-      'EMD':                         record['EMD']                                   || 'N/A',
-      'Tender Value':                record['Tender Value']                          || 'N/A',
-      'Tender Type':                 record['Tender Type']                           || 'N/A',
-      'Bidding Type':                record['Bidding Type']                          || 'N/A',
-      'Competition Type':            record['Competition Type']                      || 'N/A',
-      'Publish Date':                record['Publish Date']                          || 'N/A',
-      'Last Date of Bid Submission': record['Last Date of Bid Submission']           || 'N/A',
-      'Tender Opening Date':         record['Tender Opening Date']                   || 'N/A',
-      'Address':                     record['Address']                               || 'N/A',
-      'Information Source':          record['Information Source']                    || 'N/A',
-      'View Link':                   viewLink,
-      'Additional Details':          additionalLines.join('\n')                      || 'N/A',
-      'Bid Document Details':        bidDocDetails                                   || 'N/A',
+      'TDR': record['TDR'] || 'N/A',
+      'Tender No': record['Tender No'] || record['Tender ID'] || 'N/A',
+      'Tendering Authority': record['Tendering Authority'] || record['Company Name'] || 'N/A',
+      'Tender Brief': record['Tender Brief'] || 'N/A',
+      'City': record['City'] || 'N/A',
+      'State': record['State'] || 'N/A',
+      'Document Fees': record['Document Fees'] || 'N/A',
+      'EMD': record['EMD'] || 'N/A',
+      'Tender Value': record['Tender Value'] || 'N/A',
+      'Tender Type': record['Tender Type'] || 'N/A',
+      'Bidding Type': record['Bidding Type'] || 'N/A',
+      'Competition Type': record['Competition Type'] || 'N/A',
+      'Publish Date': record['Publish Date'] || 'N/A',
+      'Last Date of Bid Submission': record['Last Date of Bid Submission'] || 'N/A',
+      'Tender Opening Date': record['Tender Opening Date'] || 'N/A',
+      'Address': record['Address'] || 'N/A',
+      'Information Source': record['Information Source'] || 'N/A',
+      'View Link': viewLink,
+      'Additional Details': additionalLines.join('\n') || 'N/A',
+      'Bid Document Details': bidDocDetails || 'N/A',
     };
   } catch (e) {
     return {
@@ -605,21 +531,21 @@ app.get('/scrape-deep', async (req, res) => {
     return;
   }
 
-  res.setHeader('Content-Type',  'text/event-stream');
+  res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
-  res.setHeader('Connection',    'keep-alive');
+  res.setHeader('Connection', 'keep-alive');
   res.flushHeaders();
 
   try {
     sseWrite(res, 'status', { phase: 1, message: 'Fetching listing page…' });
 
     const { data } = await axios.get(url.split('#')[0], { headers: HEADERS, timeout: 20000, maxRedirects: 5 });
-    const $         = cheerio.load(data);
+    const $ = cheerio.load(data);
     const pageTitle = clean($('title').text()) || 'Tenders';
     $('script, style').remove();
 
     const sections = parseDailyDigest($);
-    const total    = sections.reduce((n, s) => n + s.tenders.length, 0);
+    const total = sections.reduce((n, s) => n + s.tenders.length, 0);
 
     sseWrite(res, 'status', {
       phase: 2,
@@ -655,11 +581,11 @@ app.get('/scrape-deep', async (req, res) => {
     sseWrite(res, 'status', { phase: 3, message: 'Building formatted Excel file…' });
     const excelBuf = await buildExcel(enriched);
 
-    const token    = crypto.randomBytes(16).toString('hex');
+    const token = crypto.randomBytes(16).toString('hex');
     const safeName = pageTitle.replace(/[^a-z0-9]/gi, '_').slice(0, 40) || 'tender_data';
     const filePath = path.join(TMP_DIR, `${token}.xlsx`);
     fs.writeFileSync(filePath, excelBuf);
-    setTimeout(() => { try { fs.unlinkSync(filePath); } catch (_) {} }, 30 * 60 * 1000);
+    setTimeout(() => { try { fs.unlinkSync(filePath); } catch (_) { } }, 30 * 60 * 1000);
 
     sseWrite(res, 'done', { token, filename: safeName, totalTenders: total, sections: sections.length, pageTitle });
   } catch (err) {
@@ -673,7 +599,7 @@ app.get('/scrape-deep', async (req, res) => {
 //  GET /download/:token
 // ══════════════════════════════════════════════════════════════
 app.get('/download/:token', (req, res) => {
-  const token    = req.params.token.replace(/[^a-f0-9]/gi, '');
+  const token = req.params.token.replace(/[^a-f0-9]/gi, '');
   const filePath = path.join(TMP_DIR, `${token}.xlsx`);
   const filename = (req.query.name || 'tender_data').replace(/[^a-z0-9_\-]/gi, '_') + '.xlsx';
 
@@ -693,9 +619,9 @@ function cleanOldFiles() {
     const cutoff = Date.now() - 30 * 60 * 1000;
     fs.readdirSync(TMP_DIR).forEach(f => {
       const fp = path.join(TMP_DIR, f);
-      try { if (fs.statSync(fp).mtimeMs < cutoff) fs.unlinkSync(fp); } catch (_) {}
+      try { if (fs.statSync(fp).mtimeMs < cutoff) fs.unlinkSync(fp); } catch (_) { }
     });
-  } catch (_) {}
+  } catch (_) { }
 }
 
 app.listen(PORT, () => console.log(`\n🚀 Gravity Scraper → http://localhost:${PORT}\n`));
