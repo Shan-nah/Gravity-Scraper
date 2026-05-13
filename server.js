@@ -70,6 +70,37 @@ function normalizeAmount(val) {
   return val;
 }
 
+// Returns true when the detail-page tender value is a placeholder that means
+// "see the document" — signals we should look for the real figure in the bid doc.
+function needsDocLookup(val) {
+  if (!val || val === 'N/A') return true;
+  return /refer\s*doc|as\s*per\s*doc|as\s*per\s*boq|as\s*per\s*nit|per\s*nit|see\s*doc|check\s*doc|tbd|to\s*be\s*decided|as\s*per\s*schedule|as\s*per\s*estimate|as\s*per\s*tender|as\s*per\s*drawing/i.test(String(val));
+}
+
+// Scan bid-document text for common "tender / estimated value" patterns and
+// return a JS number (so numeric sort still works) or 'N/A'.
+function extractAmountFromBidDoc(text) {
+  if (!text || text === 'N/A') return 'N/A';
+  const patterns = [
+    /estimated\s*(?:bid\s*)?(?:value|cost|amount)\s*[:\|]\s*([₹Rs\.INR\s]*[0-9,\.]+(?:\s*(?:crore[s]?|cr|lac[s]?|lakh[s]?|thousand|k))?)/i,
+    /tender\s*value\s*[:\|]\s*([₹Rs\.INR\s]*[0-9,\.]+(?:\s*(?:crore[s]?|cr|lac[s]?|lakh[s]?|thousand|k))?)/i,
+    /amount\s*put\s*to\s*tender\s*[:\|]\s*([₹Rs\.INR\s]*[0-9,\.]+(?:\s*(?:crore[s]?|cr|lac[s]?|lakh[s]?|thousand|k))?)/i,
+    /contract\s*(?:value|amount)\s*[:\|]\s*([₹Rs\.INR\s]*[0-9,\.]+(?:\s*(?:crore[s]?|cr|lac[s]?|lakh[s]?|thousand|k))?)/i,
+    /approximate(?:ly)?\s*(?:value|cost|estimate)\s*[:\|]\s*([₹Rs\.INR\s]*[0-9,\.]+(?:\s*(?:crore[s]?|cr|lac[s]?|lakh[s]?|thousand|k))?)/i,
+    /total\s*(?:estimated\s*)?(?:value|cost|amount|tender)\s*[:\|]\s*([₹Rs\.INR\s]*[0-9,\.]+(?:\s*(?:crore[s]?|cr|lac[s]?|lakh[s]?|thousand|k))?)/i,
+    /work\s*(?:value|amount|estimate)\s*[:\|]\s*([₹Rs\.INR\s]*[0-9,\.]+(?:\s*(?:crore[s]?|cr|lac[s]?|lakh[s]?|thousand|k))?)/i,
+    /nit\s*(?:value|amount|cost)\s*[:\|]\s*([₹Rs\.INR\s]*[0-9,\.]+(?:\s*(?:crore[s]?|cr|lac[s]?|lakh[s]?|thousand|k))?)/i,
+  ];
+  for (const pat of patterns) {
+    const m = text.match(pat);
+    if (m?.[1]) {
+      const norm = normalizeAmount(m[1].trim());
+      if (typeof norm === 'number') return norm;
+    }
+  }
+  return 'N/A';
+}
+
 // Block private/loopback addresses to prevent SSRF
 function validateUrl(rawUrl) {
   try {
@@ -392,20 +423,7 @@ async function buildExcel(sections) {
     ],
   });
 
-  // 3. Company filter sheets
-  makeFilterSheet('Gravity',    'FF1B5E20', '1B5E20', 'A', 'Gravity');
-  makeFilterSheet('Total Tech', 'FF1565C0', '1565C0', 'A', 'Total Tech');
-  makeFilterSheet('Quickman',   'FF4A148C', '4A148C', 'A', 'Quickman');
-
-  // 4. Per-section sheets — full COLS including Bid Document Details
-  sections.forEach((sec, idx) => {
-    const tabArgb   = TAB_COLORS[idx % TAB_COLORS.length];
-    const headerHex = tabArgb.slice(2);
-    const ws        = wb.addWorksheet(uniqueName(sectionBaseName(sec.section)));
-    fillDataSheet(ws, COLS, sec.tenders, tabArgb, headerHex);
-  });
-
-  // 5. Corrigendum — only if any tender contains "corrigendum" in any field
+  // 3. Corrigendum — right after Filled, only created when relevant tenders exist
   const corrigendumRows = allRows.filter(r =>
     Object.values(r).some(v => typeof v === 'string' && v.toLowerCase().includes('corrigendum'))
   );
@@ -413,6 +431,19 @@ async function buildExcel(sections) {
     const ws = wb.addWorksheet('Corrigendum');
     fillDataSheet(ws, masterCols, corrigendumRows, 'FFFF6F00', 'E65100');
   }
+
+  // 4. Company filter sheets
+  makeFilterSheet('Gravity',    'FF1B5E20', '1B5E20', 'A', 'Gravity');
+  makeFilterSheet('Total Tech', 'FF1565C0', '1565C0', 'A', 'Total Tech');
+  makeFilterSheet('Quickman',   'FF4A148C', '4A148C', 'A', 'Quickman');
+
+  // 5. Per-section sheets — full COLS including Bid Document Details
+  sections.forEach((sec, idx) => {
+    const tabArgb   = TAB_COLORS[idx % TAB_COLORS.length];
+    const headerHex = tabArgb.slice(2);
+    const ws        = wb.addWorksheet(uniqueName(sectionBaseName(sec.section)));
+    fillDataSheet(ws, COLS, sec.tenders, tabArgb, headerHex);
+  });
 
   return wb.xlsx.writeBuffer();
 }
@@ -632,6 +663,14 @@ async function scrapeTenderDetail(viewLink) {
     if (htmlLink) bidDocDetails = await parseHtmlBidDocument(htmlLink);
     else if (pdfLink) bidDocDetails = await parsePdfBidDocument(pdfLink);
 
+    // If the detail page shows "Refer Document" / blank, try to pull the real
+    // tender value out of the bid document text we just extracted.
+    let tenderValue = normalizeAmount(record['Tender Value']);
+    if (needsDocLookup(record['Tender Value']) && bidDocDetails) {
+      const fromDoc = extractAmountFromBidDoc(bidDocDetails);
+      if (typeof fromDoc === 'number') tenderValue = fromDoc;
+    }
+
     return {
       'Company': '',
       'Status':  '',
@@ -643,7 +682,7 @@ async function scrapeTenderDetail(viewLink) {
       'State':                       record['State']                                 || 'N/A',
       'Document Fees':               record['Document Fees']                         || 'N/A',
       'EMD':                         normalizeAmount(record['EMD']),
-      'Tender Value':                normalizeAmount(record['Tender Value']),
+      'Tender Value':                tenderValue,
       'Tender Type':                 record['Tender Type']                           || 'N/A',
       'Bidding Type':                record['Bidding Type']                          || 'N/A',
       'Competition Type':            record['Competition Type']                      || 'N/A',
