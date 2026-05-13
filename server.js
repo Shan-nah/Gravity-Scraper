@@ -337,6 +337,17 @@ async function buildExcel(sections) {
   const allWs    = wb.addWorksheet(uniqueName('All Sections'));
   fillDataSheet(allWs, masterCols, allRows, 'FF2C3E50', '2C3E50');
 
+  // Shared protection options — allow reading and sorting but block edits
+  const sheetProtectOpts = {
+    selectLockedCells:   true,
+    selectUnlockedCells: true,
+    sort:                true,
+    autoFilter:          true,
+    formatCells:         false,
+    insertRows:          false,
+    deleteRows:          false,
+  };
+
   // ── Helper: build a standard linked filter sheet (FILTER formula)
   function makeFilterSheet(name, tabArgb, hdrHex, filterCol, filterValue) {
     const ws = wb.addWorksheet(uniqueName(name));
@@ -351,6 +362,8 @@ async function buildExcel(sections) {
     ws.getCell('A2').value = {
       formula: `IFERROR(FILTER(${src},${crit}="${filterValue}"),IF(ROWS(A2:A2)=1,"No tenders assigned to ${name}",""))`,
     };
+    // Protect formula cells from accidental edits/deletions
+    ws.protect('', sheetProtectOpts);
     return ws;
   }
 
@@ -395,7 +408,7 @@ async function buildExcel(sections) {
   // C in All Sections = start of Section and onwards (masterCols index 2)
   filledWs.getCell('F2').value = { formula: `IFERROR(FILTER('All Sections'!C2:${lastCol}${maxRow},${fCrit}),"")` };
 
-  // Bid Status (col E) — dropdown + green/red conditional formatting
+  // Bid Status (col E) — dropdown
   for (let r = 2; r <= 1002; r++) {
     filledWs.getCell(`E${r}`).dataValidation = {
       type: 'list', allowBlank: true,
@@ -403,18 +416,20 @@ async function buildExcel(sections) {
       showErrorMessage: false,
     };
   }
+  // Use cellIs/equal — more reliably written by ExcelJS than containsText.
+  // Accepted → dark green,  Rejected → dark red.
   filledWs.addConditionalFormatting({
     ref: 'E2:E1002',
     rules: [
       {
-        type: 'containsText', operator: 'containsText', text: 'Accepted', priority: 1,
+        type: 'cellIs', operator: 'equal', formulae: ['"Accepted"'], priority: 1,
         style: {
           fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF2E7D32' } },
           font: { name: 'Calibri', size: 10, bold: true, color: { argb: 'FFFFFFFF' } },
         },
       },
       {
-        type: 'containsText', operator: 'containsText', text: 'Rejected', priority: 2,
+        type: 'cellIs', operator: 'equal', formulae: ['"Rejected"'], priority: 2,
         style: {
           fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFC62828' } },
           font: { name: 'Calibri', size: 10, bold: true, color: { argb: 'FFFFFFFF' } },
@@ -422,6 +437,12 @@ async function buildExcel(sections) {
       },
     ],
   });
+
+  // Protect formula cells (A, B, F+) — unlock only the three user-input columns
+  filledWs.getColumn('C').protection = { locked: false };
+  filledWs.getColumn('D').protection = { locked: false };
+  filledWs.getColumn('E').protection = { locked: false };
+  filledWs.protect('', sheetProtectOpts);
 
   // 3. Corrigendum — right after Filled, only created when relevant tenders exist
   const corrigendumRows = allRows.filter(r =>
