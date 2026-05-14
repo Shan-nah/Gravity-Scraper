@@ -502,7 +502,7 @@ async function parsePdfBidDocument(url) {
 
     const [tableResult, textResult] = await Promise.all([
       parser.getTable().catch(() => ({ pages: [] })),
-      parser.getText(),
+      parser.getText().catch(() => ({ text: '' })),
     ]);
 
     const tableCellTexts = new Set();
@@ -528,7 +528,7 @@ async function parsePdfBidDocument(url) {
     const textLines = [];
     let blankRun = 0;
 
-    for (const rawLine of textResult.text.split('\n')) {
+    for (const rawLine of (textResult?.text || '').split('\n')) {
       const t = rawLine.trim();
       if (!t || /^\d{1,3}$/.test(t) || /^Page\s+\d+/i.test(t) || seen.has(t)) {
         if (textLines.length && blankRun < 1) { textLines.push(''); blankRun++; }
