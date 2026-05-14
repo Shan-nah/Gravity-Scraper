@@ -4,104 +4,270 @@
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>Gravity Scraper – Tender Intelligence</title>
-  <meta name="description" content="Extract tender data from TenderDetail and download as Excel."/>
   <link rel="preconnect" href="https://fonts.googleapis.com"/>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet"/>
   <style>
-    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-    :root{
-      --bg:#0b0e1a;--surface:#111527;--card:#161b2e;
-      --border:rgba(99,120,255,.18);--accent:#6378ff;--accent2:#a259ff;
-      --green:#22d387;--red:#ff4d6d;--amber:#f59e0b;
-      --text:#e8eaf6;--muted:#7b82a8;--radius:14px;
-      --shadow:0 8px 40px rgba(0,0,0,.45);
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:       #080c18;
+      --surface:  #0e1225;
+      --card:     #111829;
+      --card2:    #141d2e;
+      --border:   rgba(100,130,255,.14);
+      --accent:   #5b73ff;
+      --accent2:  #9b59ff;
+      --green:    #1fd17e;
+      --red:      #ff4d6d;
+      --amber:    #f59e0b;
+      --text:     #e4e8f8;
+      --muted:    #6b749e;
+      --radius:   16px;
+      --shadow:   0 12px 48px rgba(0,0,0,.55);
     }
-    body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;overflow-x:hidden;display:flex;align-items:center;justify-content:center}
-    body::before{content:'';position:fixed;inset:0;
-      background-image:linear-gradient(rgba(99,120,255,.04) 1px,transparent 1px),linear-gradient(90deg,rgba(99,120,255,.04) 1px,transparent 1px);
-      background-size:40px 40px;pointer-events:none;z-index:0}
-    .blob{position:fixed;border-radius:50%;filter:blur(100px);opacity:.13;pointer-events:none;z-index:0;animation:float 8s ease-in-out infinite alternate}
-    .blob-1{width:500px;height:500px;background:var(--accent);top:-180px;left:-120px}
-    .blob-2{width:420px;height:420px;background:var(--accent2);bottom:-120px;right:-100px;animation-delay:-3s}
-    @keyframes float{from{transform:translate(0,0) scale(1)}to{transform:translate(30px,20px) scale(1.05)}}
 
-    .page{position:relative;z-index:1;width:100%;max-width:680px;padding:20px 24px 60px}
+    body {
+      font-family: 'Inter', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow-x: hidden;
+    }
 
-    /* Header */
-    header{text-align:center;padding:48px 0 36px}
-    .logo{display:inline-flex;align-items:center;gap:12px;margin-bottom:16px}
-    .logo-icon{width:52px;height:52px;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:14px;display:flex;align-items:center;justify-content:center;font-size:26px;box-shadow:0 0 30px rgba(99,120,255,.45)}
-    .logo-text{font-size:28px;font-weight:800;letter-spacing:-.5px}
-    .logo-text span{background:linear-gradient(90deg,var(--accent),var(--accent2));-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
-    .tagline{color:var(--muted);font-size:15px;line-height:1.7;max-width:400px;margin:0 auto}
+    /* Animated mesh grid */
+    body::before {
+      content: '';
+      position: fixed; inset: 0;
+      background-image:
+        linear-gradient(rgba(100,130,255,.035) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(100,130,255,.035) 1px, transparent 1px);
+      background-size: 44px 44px;
+      pointer-events: none; z-index: 0;
+    }
 
-    /* Card */
-    .card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:28px 28px;margin-bottom:20px;box-shadow:var(--shadow)}
+    /* Ambient blobs */
+    .blob {
+      position: fixed; border-radius: 50%;
+      filter: blur(110px); opacity: .1;
+      pointer-events: none; z-index: 0;
+      animation: blobFloat 10s ease-in-out infinite alternate;
+    }
+    .blob-1 { width:560px; height:560px; background:var(--accent);  top:-200px; left:-140px; }
+    .blob-2 { width:480px; height:480px; background:var(--accent2); bottom:-140px; right:-120px; animation-delay:-4s; }
+    .blob-3 { width:300px; height:300px; background:var(--green);   top:40%; left:50%; opacity:.05; animation-delay:-2s; }
+    @keyframes blobFloat {
+      from { transform: translate(0,0) scale(1); }
+      to   { transform: translate(24px,16px) scale(1.06); }
+    }
 
-    /* Input */
-    .input-label{display:block;font-size:12px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:10px}
-    #urlInput{width:100%;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px 16px;font-size:15px;color:var(--text);outline:none;transition:border-color .2s,box-shadow .2s;margin-bottom:12px}
-    #urlInput::placeholder{color:var(--muted)}
-    #urlInput:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(99,120,255,.18)}
+    .page {
+      position: relative; z-index: 1;
+      width: 100%; max-width: 700px;
+      padding: 20px 24px 64px;
+    }
 
-    /* Buttons */
-    .btn{display:flex;align-items:center;justify-content:center;gap:9px;width:100%;padding:14px;border:none;border-radius:10px;font-size:15px;font-weight:700;cursor:pointer;transition:transform .15s,box-shadow .2s,opacity .2s}
-    .btn:active{transform:scale(.98)}
-    .btn:disabled{opacity:.4;cursor:not-allowed}
-    .btn-primary{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;box-shadow:0 4px 22px rgba(99,120,255,.4)}
-    .btn-primary:not(:disabled):hover{box-shadow:0 6px 32px rgba(99,120,255,.55)}
+    /* ── Header ── */
+    header { text-align: center; padding: 52px 0 40px; }
+    .logo  { display: inline-flex; align-items: center; gap: 14px; margin-bottom: 18px; }
+    .logo-icon {
+      width: 56px; height: 56px;
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      border-radius: 16px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 28px;
+      box-shadow: 0 0 36px rgba(91,115,255,.5), inset 0 1px 0 rgba(255,255,255,.15);
+    }
+    .logo-text { font-size: 30px; font-weight: 800; letter-spacing: -.6px; }
+    .logo-text span {
+      background: linear-gradient(90deg, var(--accent), var(--accent2));
+      -webkit-background-clip: text; background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .tagline { color: var(--muted); font-size: 15px; line-height: 1.75; max-width: 420px; margin: 0 auto; }
 
-    /* Status */
-    .status-box{display:none;align-items:center;gap:12px;padding:13px 16px;border-radius:10px;font-size:14px;font-weight:500;margin-top:14px}
-    .status-box.info   {background:rgba(99,120,255,.12);border:1px solid rgba(99,120,255,.25);color:#a5b4ff}
-    .status-box.error  {background:rgba(255,77,109,.12);border:1px solid rgba(255,77,109,.25);color:#ff8fa3}
-    .status-box.success{background:rgba(34,211,135,.12);border:1px solid rgba(34,211,135,.25);color:var(--green)}
-    .spinner{width:16px;height:16px;border:2px solid currentColor;border-top-color:transparent;border-radius:50%;animation:spin .7s linear infinite;flex-shrink:0}
-    @keyframes spin{to{transform:rotate(360deg)}}
+    /* ── Cards ── */
+    .card {
+      background: linear-gradient(160deg, var(--card) 0%, var(--card2) 100%);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 28px;
+      margin-bottom: 18px;
+      box-shadow: var(--shadow), inset 0 1px 0 rgba(255,255,255,.04);
+      transition: border-color .25s ease, box-shadow .25s ease;
+    }
+    .card:hover { border-color: rgba(100,130,255,.24); }
 
-    /* Progress card */
-    #progressCard{display:none}
-    .progress-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}
-    .progress-header h3{font-size:15px;font-weight:700;color:var(--text)}
-    .pct-badge{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;padding:3px 12px;border-radius:20px;font-size:13px;font-weight:700}
-    .progress-track{background:var(--surface);border:1px solid var(--border);border-radius:30px;height:9px;overflow:hidden;margin-bottom:10px}
-    .progress-fill{height:100%;border-radius:30px;background:linear-gradient(90deg,var(--accent),var(--accent2));transition:width .4s ease;width:0%}
-    .progress-sub{font-size:12px;color:var(--muted);margin-bottom:16px}
+    /* smooth show/hide */
+    .card-hidden { display: none !important; }
+    @keyframes cardIn {
+      from { opacity: 0; transform: translateY(14px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    .card-visible { animation: cardIn .32s cubic-bezier(.22,.68,0,1.2) forwards; }
 
-    /* Section pills */
-    .section-pills{display:flex;flex-direction:column;gap:6px;max-height:200px;overflow-y:auto;padding-right:4px}
-    .section-pills::-webkit-scrollbar{width:4px}
-    .section-pills::-webkit-scrollbar-track{background:transparent}
-    .section-pills::-webkit-scrollbar-thumb{background:var(--border);border-radius:4px}
-    .sec-pill{display:flex;align-items:center;gap:10px;padding:8px 12px;background:var(--surface);border:1px solid var(--border);border-radius:8px;font-size:12.5px;color:var(--muted);transition:all .3s}
-    .sec-pill.active{border-color:rgba(99,120,255,.4);color:#a5b4ff}
-    .sec-pill.done  {border-color:rgba(34,211,135,.3);color:var(--green)}
-    .sec-dot{width:7px;height:7px;border-radius:50%;background:var(--border);flex-shrink:0;transition:background .3s}
-    .sec-pill.active .sec-dot{background:var(--accent);animation:pulse 1s ease infinite}
-    .sec-pill.done   .sec-dot{background:var(--green);animation:none}
-    @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
-    .sec-count{margin-left:auto;font-size:11px;opacity:.7}
+    /* ── Input ── */
+    .input-label {
+      display: block; font-size: 11px; font-weight: 700;
+      color: var(--muted); text-transform: uppercase;
+      letter-spacing: .1em; margin-bottom: 10px;
+    }
+    #urlInput {
+      width: 100%;
+      background: var(--surface);
+      border: 1.5px solid var(--border);
+      border-radius: 11px;
+      padding: 14px 16px; font-size: 15px;
+      color: var(--text); outline: none;
+      transition: border-color .2s, box-shadow .2s, background .2s;
+      margin-bottom: 14px;
+    }
+    #urlInput::placeholder { color: var(--muted); }
+    #urlInput:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(91,115,255,.18);
+      background: rgba(14,18,37,.9);
+    }
 
-    /* Download card */
-    #downloadCard{display:none}
-    .dl-inner{text-align:center;padding:10px 0}
-    .dl-icon{font-size:52px;margin-bottom:12px}
-    .dl-title{font-size:20px;font-weight:800;margin-bottom:6px}
-    .dl-sub{color:var(--muted);font-size:14px;margin-bottom:24px;line-height:1.6}
-    .dl-stats{display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-bottom:24px}
-    .dl-stat{background:var(--surface);border:1px solid var(--border);border-radius:30px;padding:7px 18px;font-size:13px;color:var(--muted)}
-    .dl-stat strong{color:var(--text)}
-    .btn-download{display:flex;align-items:center;justify-content:center;gap:10px;padding:16px 28px;border-radius:12px;font-size:16px;font-weight:700;cursor:pointer;background:linear-gradient(135deg,var(--green),#16a871);color:#fff;border:none;box-shadow:0 6px 24px rgba(34,211,135,.4);transition:transform .15s,box-shadow .2s;text-decoration:none;width:100%}
-    .btn-download:hover{box-shadow:0 8px 32px rgba(34,211,135,.55);transform:translateY(-1px)}
-    .btn-again{display:block;margin-top:12px;text-align:center;font-size:13px;color:var(--muted);cursor:pointer;text-decoration:underline;text-underline-offset:3px}
-    .btn-again:hover{color:var(--text)}
+    /* ── Buttons ── */
+    .btn {
+      display: flex; align-items: center; justify-content: center; gap: 9px;
+      width: 100%; padding: 15px;
+      border: none; border-radius: 11px;
+      font-size: 15px; font-weight: 700; cursor: pointer;
+      transition: transform .15s cubic-bezier(.22,.68,0,1.2), box-shadow .2s, opacity .2s;
+    }
+    .btn:active  { transform: scale(.97); }
+    .btn:disabled { opacity: .38; cursor: not-allowed; }
+    .btn-primary {
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      color: #fff;
+      box-shadow: 0 4px 24px rgba(91,115,255,.42);
+    }
+    .btn-primary:not(:disabled):hover {
+      transform: translateY(-2px);
+      box-shadow: 0 8px 36px rgba(91,115,255,.58);
+    }
 
-    footer{text-align:center;font-size:12px;color:var(--muted);margin-top:32px;opacity:.5}
+    /* ── Status box ── */
+    .status-box {
+      display: none; align-items: center; gap: 11px;
+      padding: 13px 16px; border-radius: 11px;
+      font-size: 13.5px; font-weight: 500;
+      margin-top: 14px;
+      animation: cardIn .28s ease forwards;
+    }
+    .status-box.info    { background:rgba(91,115,255,.12); border:1px solid rgba(91,115,255,.26); color:#a8b8ff; }
+    .status-box.error   { background:rgba(255,77,109,.12); border:1px solid rgba(255,77,109,.26); color:#ff8fa3; }
+    .status-box.success { background:rgba(31,209,126,.12); border:1px solid rgba(31,209,126,.26); color:var(--green); }
+    .spinner {
+      width:16px; height:16px; flex-shrink:0;
+      border:2px solid currentColor; border-top-color:transparent;
+      border-radius:50%; animation: spin .65s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Progress ── */
+    #progressCard { display: none; }
+    .prog-header  { display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; }
+    .prog-title   { font-size:15px; font-weight:700; display:flex; align-items:center; gap:8px; }
+    .prog-pulse   { width:9px; height:9px; border-radius:50%; background:var(--accent); animation:pulse 1.2s ease infinite; }
+    @keyframes pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.4;transform:scale(.7)} }
+    .pct-badge    {
+      background: linear-gradient(135deg,var(--accent),var(--accent2));
+      color:#fff; padding:3px 13px; border-radius:20px;
+      font-size:13px; font-weight:700;
+      box-shadow: 0 2px 10px rgba(91,115,255,.4);
+    }
+    .progress-track {
+      background: var(--surface); border:1px solid var(--border);
+      border-radius:30px; height:8px; overflow:hidden; margin-bottom:10px;
+      box-shadow: inset 0 1px 4px rgba(0,0,0,.3);
+    }
+    .progress-fill {
+      height:100%; border-radius:30px; width:0%;
+      background: linear-gradient(90deg, var(--accent), var(--accent2));
+      transition: width .45s cubic-bezier(.4,0,.2,1);
+      position:relative; overflow:hidden;
+    }
+    .progress-fill::after {
+      content:'';
+      position:absolute; inset:0;
+      background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,.18) 50%, transparent 100%);
+      animation: shimmer 1.6s ease-in-out infinite;
+      background-size:200% 100%;
+    }
+    @keyframes shimmer { from{background-position:200%} to{background-position:-200%} }
+    .progress-sub { font-size:12.5px; color:var(--muted); margin-bottom:18px; }
+
+    /* ── Section pills ── */
+    .section-pills { display:flex; flex-direction:column; gap:6px; max-height:210px; overflow-y:auto; padding-right:4px; }
+    .section-pills::-webkit-scrollbar { width:3px; }
+    .section-pills::-webkit-scrollbar-track { background:transparent; }
+    .section-pills::-webkit-scrollbar-thumb { background:var(--border); border-radius:3px; }
+    .sec-pill {
+      display:flex; align-items:center; gap:10px;
+      padding:8px 13px;
+      background:rgba(14,18,37,.7); border:1px solid var(--border);
+      border-radius:9px; font-size:12.5px; color:var(--muted);
+      transition: border-color .25s, color .25s, background .25s, transform .2s;
+    }
+    .sec-pill.active {
+      border-color:rgba(91,115,255,.4); color:#b0beff;
+      background:rgba(91,115,255,.08); transform:translateX(3px);
+    }
+    .sec-pill.done  {
+      border-color:rgba(31,209,126,.3); color:var(--green);
+      background:rgba(31,209,126,.07);
+    }
+    .sec-dot {
+      width:7px; height:7px; border-radius:50%; flex-shrink:0;
+      background:var(--border); transition:background .3s;
+    }
+    .sec-pill.active .sec-dot { background:var(--accent); animation:pulse 1s ease infinite; }
+    .sec-pill.done   .sec-dot { background:var(--green); animation:none; }
+    .sec-count { margin-left:auto; font-size:11px; opacity:.7; font-variant-numeric:tabular-nums; }
+
+    /* ── Download card ── */
+    #downloadCard { display:none; }
+    .dl-inner { text-align:center; padding:8px 0; }
+    .dl-icon  { font-size:54px; margin-bottom:14px; filter:drop-shadow(0 0 18px rgba(31,209,126,.35)); }
+    .dl-title { font-size:22px; font-weight:800; margin-bottom:8px; }
+    .dl-sub   { color:var(--muted); font-size:14px; margin-bottom:24px; line-height:1.65; }
+    .dl-stats { display:flex; gap:10px; justify-content:center; flex-wrap:wrap; margin-bottom:24px; }
+    .dl-stat  {
+      background:var(--surface); border:1px solid var(--border);
+      border-radius:30px; padding:6px 18px; font-size:13px; color:var(--muted);
+    }
+    .dl-stat strong { color:var(--text); }
+    .btn-download {
+      display:flex; align-items:center; justify-content:center; gap:10px;
+      padding:16px 28px; border-radius:12px;
+      font-size:16px; font-weight:700; cursor:pointer;
+      background:linear-gradient(135deg,var(--green),#18a867);
+      color:#fff; border:none;
+      box-shadow:0 6px 28px rgba(31,209,126,.42);
+      transition:transform .15s cubic-bezier(.22,.68,0,1.2), box-shadow .2s;
+      text-decoration:none; width:100%;
+    }
+    .btn-download:hover { transform:translateY(-2px); box-shadow:0 10px 36px rgba(31,209,126,.55); }
+    .btn-again {
+      display:block; margin-top:12px; text-align:center;
+      font-size:13px; color:var(--muted); cursor:pointer;
+      text-decoration:underline; text-underline-offset:3px;
+      transition:color .2s;
+    }
+    .btn-again:hover { color:var(--text); }
+
+    footer { text-align:center; font-size:12px; color:var(--muted); margin-top:36px; opacity:.45; }
   </style>
 </head>
 <body>
 <div class="blob blob-1"></div>
 <div class="blob blob-2"></div>
+<div class="blob blob-3"></div>
 
 <div class="page">
   <header>
@@ -109,15 +275,19 @@
       <div class="logo-icon">🌐</div>
       <div class="logo-text"><span>Gravity</span> Scraper</div>
     </div>
-    <p class="tagline">Paste your TenderDetail daily digest URL — we'll extract every tender and build a ready-to-download Excel sheet.</p>
+    <p class="tagline">Paste a TenderDetail daily digest URL — we extract every tender and build a ready-to-use Excel workbook with smart sheets.</p>
   </header>
 
-  <!-- Input card -->
+  <!-- Input -->
   <div class="card" id="inputCard">
     <label class="input-label" for="urlInput">🔗 Daily Digest URL</label>
-    <input id="urlInput" type="url" placeholder="https://www.tenderdetail.com/dailytenders/…" autocomplete="off" spellcheck="false"/>
+    <input id="urlInput" type="url"
+      placeholder="https://www.tenderdetail.com/dailytenders/…"
+      autocomplete="off" spellcheck="false"/>
     <button class="btn btn-primary" id="scrapeBtn" onclick="startScrape()">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/>
+      </svg>
       Scrape &amp; Generate Excel
     </button>
     <div class="status-box" id="statusBox">
@@ -126,10 +296,13 @@
     </div>
   </div>
 
-  <!-- Progress card -->
-  <div class="card" id="progressCard">
-    <div class="progress-header">
-      <h3>⚡ Extracting Tenders…</h3>
+  <!-- Progress -->
+  <div class="card card-hidden" id="progressCard">
+    <div class="prog-header">
+      <div class="prog-title">
+        <div class="prog-pulse"></div>
+        Extracting Tenders…
+      </div>
       <span class="pct-badge" id="pctBadge">0%</span>
     </div>
     <div class="progress-track"><div class="progress-fill" id="progressFill"></div></div>
@@ -137,50 +310,68 @@
     <div class="section-pills" id="sectionPills"></div>
   </div>
 
-  <!-- Download card -->
-  <div class="card" id="downloadCard">
+  <!-- Download -->
+  <div class="card card-hidden" id="downloadCard">
     <div class="dl-inner">
       <div class="dl-icon">✅</div>
       <div class="dl-title">Your Excel is Ready!</div>
-      <div class="dl-sub" id="dlSub">All tenders have been extracted and organized into separate sheets.</div>
+      <div class="dl-sub" id="dlSub">All tenders extracted and organized into smart sheets.</div>
       <div class="dl-stats" id="dlStats"></div>
       <a class="btn-download" id="downloadLink" href="#" download>
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+          <polyline points="7 10 12 15 17 10"/>
+          <line x1="12" y1="15" x2="12" y2="3"/>
+        </svg>
         Download Excel File
       </a>
       <span class="btn-again" onclick="resetUI()">↩ Scrape another URL</span>
     </div>
   </div>
 
-  <footer>Gravity Scraper &nbsp;·&nbsp; Built for tender intelligence</footer>
+  <footer>Gravity Scraper &nbsp;·&nbsp; Tender Intelligence</footer>
 </div>
 
 <script>
   let currentSSE = null;
 
-  function showStatus(msg, type='info', spin=false) {
+  function showCard(id) {
+    const el = document.getElementById(id);
+    el.classList.remove('card-hidden');
+    void el.offsetWidth; // reflow triggers animation
+    el.classList.add('card-visible');
+  }
+  function hideCard(id) {
+    const el = document.getElementById(id);
+    el.classList.remove('card-visible');
+    el.classList.add('card-hidden');
+  }
+
+  function showStatus(msg, type = 'info', spin = false) {
     const box = document.getElementById('statusBox');
     box.style.display = 'flex';
     box.className = 'status-box ' + type;
     document.getElementById('statusMsg').textContent = msg;
     document.getElementById('spinner').style.display = spin ? 'block' : 'none';
   }
-
-  function setProgress(done, total, sub) {
-    const pct = total > 0 ? Math.min(100, Math.round((done/total)*100)) : 0;
-    document.getElementById('progressFill').style.width = pct + '%';
-    document.getElementById('pctBadge').textContent     = pct + '%';
-    document.getElementById('progressSub').textContent  = sub || `${done} of ${total} tenders extracted`;
+  function hideStatus() {
+    document.getElementById('statusBox').style.display = 'none';
   }
 
-  function setPill(name, state) { // state: 'pending'|'active'|'done'
-    const id  = 'pill-' + name.replace(/\W+/g,'_');
-    let pill  = document.getElementById(id);
+  function setProgress(done, total, sub) {
+    const pct = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
+    document.getElementById('progressFill').style.width = pct + '%';
+    document.getElementById('pctBadge').textContent = pct + '%';
+    document.getElementById('progressSub').textContent = sub || `${done} of ${total} tenders extracted`;
+  }
+
+  function setPill(name, state) {
+    const id   = 'pill-' + name.replace(/\W+/g, '_');
+    let pill   = document.getElementById(id);
     if (!pill) {
       pill = document.createElement('div');
       pill.id = id;
-      pill.className = 'sec-pill';
-      pill.innerHTML = `<div class="sec-dot"></div><span class="sec-name">${esc(name)}</span><span class="sec-count" id="${id}-cnt"></span>`;
+      pill.innerHTML = `<div class="sec-dot"></div><span>${esc(name)}</span><span class="sec-count" id="${id}-cnt"></span>`;
       document.getElementById('sectionPills').appendChild(pill);
     }
     pill.className = 'sec-pill ' + state;
@@ -188,14 +379,14 @@
 
   async function startScrape() {
     const url = document.getElementById('urlInput').value.trim();
-    if (!url) { showStatus('Please enter a URL.', 'error'); return; }
+    if (!url)              { showStatus('Please enter a URL.', 'error'); return; }
     if (!url.startsWith('http')) { showStatus('URL must start with https://', 'error'); return; }
 
     if (currentSSE) { currentSSE.close(); currentSSE = null; }
 
     document.getElementById('scrapeBtn').disabled = true;
-    document.getElementById('downloadCard').style.display  = 'none';
-    document.getElementById('progressCard').style.display  = 'none';
+    hideCard('downloadCard');
+    hideCard('progressCard');
     document.getElementById('sectionPills').innerHTML = '';
 
     showStatus('Connecting to server…', 'info', true);
@@ -206,17 +397,13 @@
     sse.addEventListener('status', e => {
       const d = JSON.parse(e.data);
       showStatus(d.message, 'info', true);
-
       if (d.phase === 2) {
-        // Show progress card, build section pills
-        document.getElementById('progressCard').style.display = 'block';
-        document.getElementById('statusBox').style.display    = 'none';
+        hideStatus();
+        showCard('progressCard');
         setProgress(0, d.total, 'Fetching tender detail pages…');
         (d.sections || []).forEach(s => setPill(s.section, 'pending'));
       }
-      if (d.phase === 3) {
-        setProgress(d.total, d.total, 'Building Excel file…');
-      }
+      if (d.phase === 3) setProgress(d.total, d.total, 'Building Excel workbook…');
     });
 
     sse.addEventListener('section_start', e => {
@@ -227,39 +414,34 @@
     sse.addEventListener('progress', e => {
       const d = JSON.parse(e.data);
       setProgress(d.globalDone, d.total, `${d.section}: ${d.sectionDone}/${d.sectionTotal}`);
-      // Update count
-      const cntEl = document.getElementById('pill-' + d.section.replace(/\W+/g,'_') + '-cnt');
+      const cntEl = document.getElementById('pill-' + d.section.replace(/\W+/g, '_') + '-cnt');
       if (cntEl) cntEl.textContent = `${d.sectionDone}/${d.sectionTotal}`;
     });
 
     sse.addEventListener('section_done', e => {
       const d = JSON.parse(e.data);
       setPill(d.section, 'done');
-      const cntEl = document.getElementById('pill-' + d.section.replace(/\W+/g,'_') + '-cnt');
+      const cntEl = document.getElementById('pill-' + d.section.replace(/\W+/g, '_') + '-cnt');
       if (cntEl) cntEl.textContent = `✓ ${d.count}`;
     });
 
     sse.addEventListener('done', e => {
       sse.close(); currentSSE = null;
       const d = JSON.parse(e.data);
-
-      // Hide progress, show download card
-      document.getElementById('progressCard').style.display = 'none';
-      const dlCard = document.getElementById('downloadCard');
-      dlCard.style.display = 'block';
+      hideCard('progressCard');
 
       document.getElementById('dlSub').textContent =
         `${d.totalTenders} tenders across ${d.sections} sections — each in its own sheet.`;
-
       document.getElementById('dlStats').innerHTML = `
         <div class="dl-stat">Sections: <strong>${d.sections}</strong></div>
-        <div class="dl-stat">Tenders: <strong>${d.totalTenders}</strong></div>
-        <div class="dl-stat">Sheets: <strong>${d.sections + 1}</strong></div>`;
+        <div class="dl-stat">Tenders:  <strong>${d.totalTenders}</strong></div>
+        <div class="dl-stat">Sheets:   <strong>${d.sections + 6}</strong></div>`;
 
       const link = document.getElementById('downloadLink');
       link.href     = `/download/${d.token}?name=${encodeURIComponent(d.filename)}`;
       link.download = d.filename + '.xlsx';
 
+      showCard('downloadCard');
       document.getElementById('scrapeBtn').disabled = false;
     });
 
@@ -271,15 +453,15 @@
         showStatus('❌ Connection lost. Please try again.', 'error');
       }
       sse.close(); currentSSE = null;
-      document.getElementById('progressCard').style.display = 'none';
+      hideCard('progressCard');
       document.getElementById('scrapeBtn').disabled = false;
     });
   }
 
   function resetUI() {
-    document.getElementById('downloadCard').style.display  = 'none';
-    document.getElementById('progressCard').style.display  = 'none';
-    document.getElementById('statusBox').style.display     = 'none';
+    hideCard('downloadCard');
+    hideCard('progressCard');
+    hideStatus();
     document.getElementById('sectionPills').innerHTML = '';
     document.getElementById('scrapeBtn').disabled = false;
     document.getElementById('urlInput').value = '';
@@ -287,7 +469,7 @@
   }
 
   function esc(s) {
-    return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   }
 
   document.getElementById('urlInput').addEventListener('keydown', e => {

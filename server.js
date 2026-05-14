@@ -101,6 +101,13 @@ function extractAmountFromBidDoc(text) {
   return 'N/A';
 }
 
+// Convert 1-based column number → Excel letter (1→A, 26→Z, 27→AA …)
+function colNumToLetter(n) {
+  let r = '';
+  while (n > 0) { n--; r = String.fromCharCode(65 + n % 26) + r; n = Math.floor(n / 26); }
+  return r;
+}
+
 // Block private/loopback addresses to prevent SSRF
 function validateUrl(rawUrl) {
   try {
@@ -118,9 +125,12 @@ function validateUrl(rawUrl) {
 //  18 fixed scraped fields follow, then two catch-all text cols.
 // ══════════════════════════════════════════════════════════════
 const COLS = [
-  // ── User-input dropdowns (blank on scrape; filled by user in Excel)
-  { key: 'Company', label: 'Company', width: 16 },
-  { key: 'Status',  label: 'Status',  width: 14 },
+  // ── User-input columns (blank on scrape; filled by user in Excel)
+  { key: 'Company',     label: 'Company',     width: 16 },
+  { key: 'Status',      label: 'Status',      width: 14 },
+  { key: 'Filled Date', label: 'Filled Date', width: 16 },
+  { key: 'Filled By',   label: 'Filled By',   width: 18 },
+  { key: 'Bid Status',  label: 'Bid Status',  width: 14 },
   // ── Fixed scraped fields
   { key: 'TDR',                         label: 'TDR',                          width: 14 },
   { key: 'Tender No',                   label: 'Tender No',                    width: 26 },
@@ -222,13 +232,14 @@ function fillDataSheet(ws, cols, rows, tabArgb, headerColor) {
   });
 
   // Pre-compute column indices used in per-row overrides
-  const linkIdx    = cols.findIndex(c => c.key === 'View Link');
-  const addlIdx    = cols.findIndex(c => c.key === 'Additional Details');
-  const bidIdx     = cols.findIndex(c => c.key === 'Bid Document Details');
-  const companyIdx = cols.findIndex(c => c.key === 'Company');
-  const statusIdx  = cols.findIndex(c => c.key === 'Status');
-  const emdIdx     = cols.findIndex(c => c.key === 'EMD');
-  const tvIdx      = cols.findIndex(c => c.key === 'Tender Value');
+  const linkIdx       = cols.findIndex(c => c.key === 'View Link');
+  const addlIdx       = cols.findIndex(c => c.key === 'Additional Details');
+  const bidIdx        = cols.findIndex(c => c.key === 'Bid Document Details');
+  const companyIdx    = cols.findIndex(c => c.key === 'Company');
+  const statusIdx     = cols.findIndex(c => c.key === 'Status');
+  const emdIdx        = cols.findIndex(c => c.key === 'EMD');
+  const tvIdx         = cols.findIndex(c => c.key === 'Tender Value');
+  const bidStatusIdx  = cols.findIndex(c => c.key === 'Bid Status');
 
   rows.forEach((r, i) => {
     const values = cols.map(c => r[c.key] ?? '');
@@ -252,6 +263,15 @@ function fillDataSheet(ws, cols, rows, tabArgb, headerColor) {
       row.getCell(statusIdx + 1).dataValidation = {
         type: 'list', allowBlank: true,
         formulae: ['"Important,Filled"'],
+        showErrorMessage: false,
+      };
+    }
+
+    // Bid Status dropdown — Accepted / Rejected
+    if (bidStatusIdx >= 0) {
+      row.getCell(bidStatusIdx + 1).dataValidation = {
+        type: 'list', allowBlank: true,
+        formulae: ['"Accepted,Rejected"'],
         showErrorMessage: false,
       };
     }
@@ -291,8 +311,41 @@ function fillDataSheet(ws, cols, rows, tabArgb, headerColor) {
 
   ws.autoFilter = {
     from: { row: 1, column: 1 },
-    to: { row: 1 + rows.length, column: cols.length },
+    to:   { row: 1 + rows.length, column: cols.length },
   };
+
+  const endRow = rows.length + 10;
+  const endCol = colNumToLetter(cols.length);
+
+  // Bid Status column — Accepted=dark green, Rejected=dark red
+  if (bidStatusIdx >= 0) {
+    const bsCol = colNumToLetter(bidStatusIdx + 1);
+    ws.addConditionalFormatting({
+      ref: `${bsCol}2:${bsCol}${endRow}`,
+      rules: [
+        { type: 'cellIs', operator: 'equal', formulae: ['"Accepted"'], priority: 1,
+          style: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF2E7D32' } },
+                   font: { name: 'Calibri', size: 10, bold: true, color: { argb: 'FFFFFFFF' } } } },
+        { type: 'cellIs', operator: 'equal', formulae: ['"Rejected"'], priority: 2,
+          style: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFC62828' } },
+                   font: { name: 'Calibri', size: 10, bold: true, color: { argb: 'FFFFFFFF' } } } },
+      ],
+    });
+  }
+
+  // Row highlighting — Status=Important → amber yellow, Status=Filled → soft green
+  if (statusIdx >= 0) {
+    const sCol = colNumToLetter(statusIdx + 1);
+    ws.addConditionalFormatting({
+      ref: `A2:${endCol}${endRow}`,
+      rules: [
+        { type: 'expression', formulae: [`$${sCol}2="Important"`], priority: 100,
+          style: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF59D' } } } },
+        { type: 'expression', formulae: [`$${sCol}2="Filled"`],    priority: 101,
+          style: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFA5D6A7' } } } },
+      ],
+    });
+  }
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -318,37 +371,29 @@ async function buildExcel(sections) {
     return attempt;
   }
 
-  // Helper: Excel column letter (1→A, 26→Z, 27→AA, …)
-  function colLetter(n) {
-    let r = '';
-    while (n > 0) { n--; r = String.fromCharCode(65 + n % 26) + r; n = Math.floor(n / 26); }
-    return r;
-  }
-
-  // ── Master "All Sections" sheet — Company, Status, Section + fixed cols, no Bid Doc Details
+  // ── Master "All Sections" sheet
+  //    Column order: Company | Status | Filled Date | Filled By | Bid Status | Section | …
+  const USER_INPUT_KEYS = new Set(['Company', 'Status', 'Filled Date', 'Filled By', 'Bid Status']);
   const masterCols = [
-    ...COLS.filter(c => c.key === 'Company' || c.key === 'Status'),
-    { key: 'Section', label: 'Section', width: 28 },
-    ...COLS.filter(c => !['Company', 'Status', 'Bid Document Details'].includes(c.key)),
+    ...COLS.filter(c => USER_INPUT_KEYS.has(c.key)),          // first 5 user-input cols
+    { key: 'Section', label: 'Section', width: 28 },           // section name
+    ...COLS.filter(c => !USER_INPUT_KEYS.has(c.key) && c.key !== 'Bid Document Details'),
   ];
   const allRows  = sections.flatMap(s => s.tenders.map(t => ({ Section: s.section, ...t })));
-  const lastCol  = colLetter(masterCols.length);
+  const lastCol  = colNumToLetter(masterCols.length);
   const maxRow   = Math.max(allRows.length + 10, 1000);
   const allWs    = wb.addWorksheet(uniqueName('All Sections'));
   fillDataSheet(allWs, masterCols, allRows, 'FF2C3E50', '2C3E50');
 
-  // Shared protection options — allow reading and sorting but block edits
+  // Shared protection — allow reading/sorting, block formula edits
   const sheetProtectOpts = {
-    selectLockedCells:   true,
-    selectUnlockedCells: true,
-    sort:                true,
-    autoFilter:          true,
-    formatCells:         false,
-    insertRows:          false,
-    deleteRows:          false,
+    selectLockedCells: true, selectUnlockedCells: true,
+    sort: true, autoFilter: true,
+    formatCells: false, insertRows: false, deleteRows: false,
   };
 
-  // ── Helper: build a standard linked filter sheet (FILTER formula)
+  // ── Helper: locked filter sheet driven by a FILTER formula
+  //    Also applies the same row-highlighting CF as the data sheets.
   function makeFilterSheet(name, tabArgb, hdrHex, filterCol, filterValue) {
     const ws = wb.addWorksheet(uniqueName(name));
     ws.properties = { tabColor: { argb: tabArgb } };
@@ -362,89 +407,25 @@ async function buildExcel(sections) {
     ws.getCell('A2').value = {
       formula: `IFERROR(FILTER(${src},${crit}="${filterValue}"),IF(ROWS(A2:A2)=1,"No tenders assigned to ${name}",""))`,
     };
-    // Protect formula cells from accidental edits/deletions
+    // Row highlighting (Status col = B in masterCols)
+    ws.addConditionalFormatting({
+      ref: `A2:${lastCol}${maxRow}`,
+      rules: [
+        { type: 'expression', formulae: ['$B2="Important"'], priority: 100,
+          style: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF59D' } } } },
+        { type: 'expression', formulae: ['$B2="Filled"'],    priority: 101,
+          style: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFA5D6A7' } } } },
+      ],
+    });
     ws.protect('', sheetProtectOpts);
     return ws;
   }
 
-  // ── Sheet order: All Sections → Important → Filled → Gravity/TT/QM → per-section → Corrigendum
+  // ── Sheet order: All Sections → Important → Filled → Corrigendum → Gravity → TT → QM → sections
 
-  // 1. Important
   makeFilterSheet('Important', 'FFB71C1C', 'B71C1C', 'B', 'Important');
+  makeFilterSheet('Filled',    'FF00695C', '00695C', 'B', 'Filled');
 
-  // 2. Filled sheet — three input cols (Filled Date, Filled By, Bid Status) sit
-  //    between Status (col B) and Section (col F). FILTER is split into three
-  //    separate formulas so cols C/D/E remain free for user input:
-  //      A2 = FILTER → Company (single-col spill)
-  //      B2 = FILTER → Status  (single-col spill)
-  //      C/D/E = user-input  (Filled Date, Filled By, Bid Status)
-  //      F2  = FILTER → Section … Additional Details (multi-col spill)
-  const filledWs = wb.addWorksheet(uniqueName('Filled'));
-  filledWs.properties = { tabColor: { argb: 'FF00695C' } };
-  filledWs.views      = [{ state: 'frozen', ySplit: 1, showGridLines: true }];
-
-  const filledSheetCols = [
-    masterCols[0],                                             // A  Company
-    masterCols[1],                                             // B  Status
-    { key: 'Filled Date', label: 'Filled Date', width: 16 },  // C  user input
-    { key: 'Filled By',   label: 'Filled By',   width: 18 },  // D  user input
-    { key: 'Bid Status',  label: 'Bid Status',  width: 14 },  // E  dropdown
-    ...masterCols.slice(2),                                    // F+ Section, TDR …
-  ];
-  filledWs.columns = filledSheetCols.map(c => ({ header: c.label, key: c.key, width: c.width }));
-
-  const filledHdr  = filledWs.getRow(1);
-  filledHdr.values = filledSheetCols.map(c => c.label);
-  headerStyle(filledHdr, '00695C', filledSheetCols.length);
-  // Italic headers on the three user-input columns (C=3, D=4, E=5)
-  [3, 4, 5].forEach(ci => {
-    filledHdr.getCell(ci).font = { name: 'Calibri', size: 11, bold: true, italic: true, color: { argb: 'FFFFFFFF' } };
-  });
-
-  // FILTER formulas referencing All Sections (B = Status column there)
-  const fCrit = `'All Sections'!B2:B${maxRow}="Filled"`;
-  filledWs.getCell('A2').value = { formula: `IFERROR(FILTER('All Sections'!A2:A${maxRow},${fCrit}),"No tenders marked as Filled")` };
-  filledWs.getCell('B2').value = { formula: `IFERROR(FILTER('All Sections'!B2:B${maxRow},${fCrit}),"")` };
-  // C in All Sections = start of Section and onwards (masterCols index 2)
-  filledWs.getCell('F2').value = { formula: `IFERROR(FILTER('All Sections'!C2:${lastCol}${maxRow},${fCrit}),"")` };
-
-  // Bid Status (col E) — dropdown
-  for (let r = 2; r <= 1002; r++) {
-    filledWs.getCell(`E${r}`).dataValidation = {
-      type: 'list', allowBlank: true,
-      formulae: ['"Accepted,Rejected"'],
-      showErrorMessage: false,
-    };
-  }
-  // Use cellIs/equal — more reliably written by ExcelJS than containsText.
-  // Accepted → dark green,  Rejected → dark red.
-  filledWs.addConditionalFormatting({
-    ref: 'E2:E1002',
-    rules: [
-      {
-        type: 'cellIs', operator: 'equal', formulae: ['"Accepted"'], priority: 1,
-        style: {
-          fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF2E7D32' } },
-          font: { name: 'Calibri', size: 10, bold: true, color: { argb: 'FFFFFFFF' } },
-        },
-      },
-      {
-        type: 'cellIs', operator: 'equal', formulae: ['"Rejected"'], priority: 2,
-        style: {
-          fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFC62828' } },
-          font: { name: 'Calibri', size: 10, bold: true, color: { argb: 'FFFFFFFF' } },
-        },
-      },
-    ],
-  });
-
-  // Protect formula cells (A, B, F+) — unlock only the three user-input columns
-  filledWs.getColumn('C').protection = { locked: false };
-  filledWs.getColumn('D').protection = { locked: false };
-  filledWs.getColumn('E').protection = { locked: false };
-  filledWs.protect('', sheetProtectOpts);
-
-  // 3. Corrigendum — right after Filled, only created when relevant tenders exist
   const corrigendumRows = allRows.filter(r =>
     Object.values(r).some(v => typeof v === 'string' && v.toLowerCase().includes('corrigendum'))
   );
@@ -453,12 +434,10 @@ async function buildExcel(sections) {
     fillDataSheet(ws, masterCols, corrigendumRows, 'FFFF6F00', 'E65100');
   }
 
-  // 4. Company filter sheets
   makeFilterSheet('Gravity',    'FF1B5E20', '1B5E20', 'A', 'Gravity');
   makeFilterSheet('Total Tech', 'FF1565C0', '1565C0', 'A', 'Total Tech');
   makeFilterSheet('Quickman',   'FF4A148C', '4A148C', 'A', 'Quickman');
 
-  // 5. Per-section sheets — full COLS including Bid Document Details
   sections.forEach((sec, idx) => {
     const tabArgb   = TAB_COLORS[idx % TAB_COLORS.length];
     const headerHex = tabArgb.slice(2);
@@ -693,8 +672,11 @@ async function scrapeTenderDetail(viewLink) {
     }
 
     return {
-      'Company': '',
-      'Status':  '',
+      'Company':     '',
+      'Status':      '',
+      'Filled Date': '',
+      'Filled By':   '',
+      'Bid Status':  '',
       'TDR':                         record['TDR']                                   || 'N/A',
       'Tender No':                   record['Tender No'] || record['Tender ID']      || 'N/A',
       'Tendering Authority':         record['Tendering Authority'] || record['Company Name'] || 'N/A',
@@ -718,7 +700,7 @@ async function scrapeTenderDetail(viewLink) {
     };
   } catch (e) {
     return {
-      'Company': '', 'Status': '',
+      'Company': '', 'Status': '', 'Filled Date': '', 'Filled By': '', 'Bid Status': '',
       'TDR': 'N/A', 'Tender No': 'N/A', 'Tendering Authority': 'N/A',
       'Tender Brief': `Error: ${e.message}`, 'City': 'N/A', 'State': 'N/A',
       'Document Fees': 'N/A', 'EMD': 'N/A', 'Tender Value': 'N/A',
