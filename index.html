@@ -100,13 +100,6 @@
     }
     .card:hover { border-color: rgba(100,130,255,.24); }
 
-    /* smooth show/hide */
-    .card-hidden { display: none !important; }
-    @keyframes cardIn {
-      from { opacity: 0; transform: translateY(14px); }
-      to   { opacity: 1; transform: translateY(0); }
-    }
-    .card-visible { animation: cardIn .32s cubic-bezier(.22,.68,0,1.2) forwards; }
 
     /* ── Input ── */
     .input-label {
@@ -157,7 +150,6 @@
       padding: 13px 16px; border-radius: 11px;
       font-size: 13.5px; font-weight: 500;
       margin-top: 14px;
-      animation: cardIn .28s ease forwards;
     }
     .status-box.info    { background:rgba(91,115,255,.12); border:1px solid rgba(91,115,255,.26); color:#a8b8ff; }
     .status-box.error   { background:rgba(255,77,109,.12); border:1px solid rgba(255,77,109,.26); color:#ff8fa3; }
@@ -297,7 +289,7 @@
   </div>
 
   <!-- Progress -->
-  <div class="card card-hidden" id="progressCard">
+  <div class="card" id="progressCard" style="display:none">
     <div class="prog-header">
       <div class="prog-title">
         <div class="prog-pulse"></div>
@@ -311,7 +303,7 @@
   </div>
 
   <!-- Download -->
-  <div class="card card-hidden" id="downloadCard">
+  <div class="card" id="downloadCard" style="display:none">
     <div class="dl-inner">
       <div class="dl-icon">✅</div>
       <div class="dl-title">Your Excel is Ready!</div>
@@ -335,136 +327,121 @@
 <script>
   let currentSSE = null;
 
-  function showCard(id) {
-    const el = document.getElementById(id);
-    el.classList.remove('card-hidden');
-    void el.offsetWidth; // reflow triggers animation
-    el.classList.add('card-visible');
-  }
-  function hideCard(id) {
-    const el = document.getElementById(id);
-    el.classList.remove('card-visible');
-    el.classList.add('card-hidden');
-  }
+  const progressCard = document.getElementById('progressCard');
+  const downloadCard = document.getElementById('downloadCard');
+  const statusBox    = document.getElementById('statusBox');
 
-  function showStatus(msg, type = 'info', spin = false) {
-    const box = document.getElementById('statusBox');
-    box.style.display = 'flex';
-    box.className = 'status-box ' + type;
-    document.getElementById('statusMsg').textContent = msg;
-    document.getElementById('spinner').style.display = spin ? 'block' : 'none';
-  }
-  function hideStatus() {
-    document.getElementById('statusBox').style.display = 'none';
+  function show(el)  { el.style.display = 'block'; }
+  function hide(el)  { el.style.display = 'none';  }
+
+  function showStatus(msg, type, spin) {
+    statusBox.style.display = 'flex';
+    statusBox.className     = 'status-box ' + (type || 'info');
+    document.getElementById('statusMsg').textContent          = msg;
+    document.getElementById('spinner').style.display          = spin ? 'block' : 'none';
   }
 
   function setProgress(done, total, sub) {
-    const pct = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
-    document.getElementById('progressFill').style.width = pct + '%';
-    document.getElementById('pctBadge').textContent = pct + '%';
-    document.getElementById('progressSub').textContent = sub || `${done} of ${total} tenders extracted`;
+    const pct = total > 0 ? Math.min(100, Math.round(done / total * 100)) : 0;
+    document.getElementById('progressFill').style.width      = pct + '%';
+    document.getElementById('pctBadge').textContent          = pct + '%';
+    document.getElementById('progressSub').textContent       = sub || (done + ' of ' + total + ' tenders extracted');
   }
 
   function setPill(name, state) {
-    const id   = 'pill-' + name.replace(/\W+/g, '_');
-    let pill   = document.getElementById(id);
+    const id = 'pill-' + name.replace(/\W+/g, '_');
+    let pill = document.getElementById(id);
     if (!pill) {
       pill = document.createElement('div');
-      pill.id = id;
-      pill.innerHTML = `<div class="sec-dot"></div><span>${esc(name)}</span><span class="sec-count" id="${id}-cnt"></span>`;
+      pill.id        = id;
+      pill.innerHTML = '<div class="sec-dot"></div><span>' + esc(name) + '</span>'
+                     + '<span class="sec-count" id="' + id + '-cnt"></span>';
       document.getElementById('sectionPills').appendChild(pill);
     }
     pill.className = 'sec-pill ' + state;
   }
 
-  async function startScrape() {
+  function startScrape() {
     const url = document.getElementById('urlInput').value.trim();
-    if (!url)              { showStatus('Please enter a URL.', 'error'); return; }
+    if (!url)                    { showStatus('Please enter a URL.', 'error'); return; }
     if (!url.startsWith('http')) { showStatus('URL must start with https://', 'error'); return; }
 
     if (currentSSE) { currentSSE.close(); currentSSE = null; }
 
     document.getElementById('scrapeBtn').disabled = true;
-    hideCard('downloadCard');
-    hideCard('progressCard');
+    hide(downloadCard);
+    hide(progressCard);
     document.getElementById('sectionPills').innerHTML = '';
-
     showStatus('Connecting to server…', 'info', true);
 
     const sse = new EventSource('/scrape-deep?url=' + encodeURIComponent(url));
     currentSSE = sse;
 
-    sse.addEventListener('status', e => {
-      const d = JSON.parse(e.data);
-      showStatus(d.message, 'info', true);
+    sse.addEventListener('status', function(e) {
+      var d = JSON.parse(e.data);
       if (d.phase === 2) {
-        hideStatus();
-        showCard('progressCard');
+        statusBox.style.display = 'none';
+        show(progressCard);
         setProgress(0, d.total, 'Fetching tender detail pages…');
-        (d.sections || []).forEach(s => setPill(s.section, 'pending'));
+        (d.sections || []).forEach(function(s) { setPill(s.section, 'pending'); });
+      } else if (d.phase === 3) {
+        setProgress(d.total, d.total, 'Building Excel workbook…');
+      } else {
+        showStatus(d.message, 'info', true);
       }
-      if (d.phase === 3) setProgress(d.total, d.total, 'Building Excel workbook…');
     });
 
-    sse.addEventListener('section_start', e => {
-      const d = JSON.parse(e.data);
-      setPill(d.section, 'active');
+    sse.addEventListener('section_start', function(e) {
+      setPill(JSON.parse(e.data).section, 'active');
     });
 
-    sse.addEventListener('progress', e => {
-      const d = JSON.parse(e.data);
-      setProgress(d.globalDone, d.total, `${d.section}: ${d.sectionDone}/${d.sectionTotal}`);
-      const cntEl = document.getElementById('pill-' + d.section.replace(/\W+/g, '_') + '-cnt');
-      if (cntEl) cntEl.textContent = `${d.sectionDone}/${d.sectionTotal}`;
+    sse.addEventListener('progress', function(e) {
+      var d = JSON.parse(e.data);
+      setProgress(d.globalDone, d.total, d.section + ': ' + d.sectionDone + '/' + d.sectionTotal);
+      var cnt = document.getElementById('pill-' + d.section.replace(/\W+/g, '_') + '-cnt');
+      if (cnt) cnt.textContent = d.sectionDone + '/' + d.sectionTotal;
     });
 
-    sse.addEventListener('section_done', e => {
-      const d = JSON.parse(e.data);
+    sse.addEventListener('section_done', function(e) {
+      var d = JSON.parse(e.data);
       setPill(d.section, 'done');
-      const cntEl = document.getElementById('pill-' + d.section.replace(/\W+/g, '_') + '-cnt');
-      if (cntEl) cntEl.textContent = `✓ ${d.count}`;
+      var cnt = document.getElementById('pill-' + d.section.replace(/\W+/g, '_') + '-cnt');
+      if (cnt) cnt.textContent = '✓ ' + d.count;
     });
 
-    sse.addEventListener('done', e => {
+    sse.addEventListener('done', function(e) {
       sse.close(); currentSSE = null;
-      const d = JSON.parse(e.data);
-      hideCard('progressCard');
-
-      document.getElementById('dlSub').textContent =
-        `${d.totalTenders} tenders across ${d.sections} sections — each in its own sheet.`;
-      document.getElementById('dlStats').innerHTML = `
-        <div class="dl-stat">Sections: <strong>${d.sections}</strong></div>
-        <div class="dl-stat">Tenders:  <strong>${d.totalTenders}</strong></div>
-        <div class="dl-stat">Sheets:   <strong>${d.sections + 6}</strong></div>`;
-
-      const link = document.getElementById('downloadLink');
-      link.href     = `/download/${d.token}?name=${encodeURIComponent(d.filename)}`;
+      var d = JSON.parse(e.data);
+      hide(progressCard);
+      document.getElementById('dlSub').textContent = d.totalTenders + ' tenders across ' + d.sections + ' sections — each in its own sheet.';
+      document.getElementById('dlStats').innerHTML =
+        '<div class="dl-stat">Sections: <strong>' + d.sections + '</strong></div>' +
+        '<div class="dl-stat">Tenders: <strong>' + d.totalTenders + '</strong></div>' +
+        '<div class="dl-stat">Sheets: <strong>' + (d.sections + 6) + '</strong></div>';
+      var link = document.getElementById('downloadLink');
+      link.href     = '/download/' + d.token + '?name=' + encodeURIComponent(d.filename);
       link.download = d.filename + '.xlsx';
-
-      showCard('downloadCard');
+      show(downloadCard);
       document.getElementById('scrapeBtn').disabled = false;
     });
 
-    sse.addEventListener('error', e => {
-      try {
-        const d = JSON.parse(e.data);
-        showStatus('❌ ' + d.message, 'error');
-      } catch {
-        showStatus('❌ Connection lost. Please try again.', 'error');
-      }
+    sse.addEventListener('error', function(e) {
+      var msg = 'Connection lost. Please try again.';
+      try { msg = JSON.parse(e.data).message; } catch(_) {}
+      showStatus('❌ ' + msg, 'error');
       sse.close(); currentSSE = null;
-      hideCard('progressCard');
+      hide(progressCard);
       document.getElementById('scrapeBtn').disabled = false;
     });
   }
 
   function resetUI() {
-    hideCard('downloadCard');
-    hideCard('progressCard');
-    hideStatus();
+    hide(downloadCard);
+    hide(progressCard);
+    statusBox.style.display = 'none';
     document.getElementById('sectionPills').innerHTML = '';
-    document.getElementById('scrapeBtn').disabled = false;
-    document.getElementById('urlInput').value = '';
+    document.getElementById('scrapeBtn').disabled     = false;
+    document.getElementById('urlInput').value         = '';
     document.getElementById('urlInput').focus();
   }
 
@@ -472,7 +449,7 @@
     return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   }
 
-  document.getElementById('urlInput').addEventListener('keydown', e => {
+  document.getElementById('urlInput').addEventListener('keydown', function(e) {
     if (e.key === 'Enter') startScrape();
   });
 </script>
