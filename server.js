@@ -1,15 +1,17 @@
-const express  = require('express');
-const axios    = require('axios');
-const cheerio  = require('cheerio');
-const ExcelJS  = require('exceljs');
-const cors     = require('cors');
-const path     = require('path');
-const fs       = require('fs');
-const crypto   = require('crypto');
-const { PDFParse } = require('pdf-parse');
+const express = require('express');
+const axios = require('axios');
+const cheerio = require('cheerio');
+const ExcelJS = require('exceljs');
+const cors = require('cors');
+const path = require('path');
+const fs = require('fs');
+const crypto = require('crypto');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 8080;
+
+process.on('uncaughtException', (err) => console.error('Uncaught Exception:', err));
+process.on('unhandledRejection', (err) => console.error('Unhandled Rejection:', err));
 
 app.use(cors());
 app.use(express.json());
@@ -28,8 +30,7 @@ const HEADERS = {
   'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
   'Accept-Language': 'en-US,en;q=0.5',
 };
-const CONCURRENCY = 8;
-
+const CONCURRENCY = 4; // reduced from 8 to save memory on heavy PDF processing
 
 function clean(t) { return (t || '').replace(/\s+/g, ' ').trim(); }
 
@@ -126,32 +127,32 @@ function validateUrl(rawUrl) {
 // ══════════════════════════════════════════════════════════════
 const COLS = [
   // ── User-input columns (blank on scrape; filled by user in Excel)
-  { key: 'Company',     label: 'Company',     width: 16 },
-  { key: 'Status',      label: 'Status',      width: 14 },
+  { key: 'Company', label: 'Company', width: 16 },
+  { key: 'Status', label: 'Status', width: 14 },
   { key: 'Filled Date', label: 'Filled Date', width: 16 },
-  { key: 'Filled By',   label: 'Filled By',   width: 18 },
-  { key: 'Bid Status',  label: 'Bid Status',  width: 14 },
+  { key: 'Filled By', label: 'Filled By', width: 18 },
+  { key: 'Bid Status', label: 'Bid Status', width: 14 },
   // ── Fixed scraped fields
-  { key: 'TDR',                         label: 'TDR',                          width: 14 },
-  { key: 'Tender No',                   label: 'Tender No',                    width: 26 },
-  { key: 'Tendering Authority',         label: 'Tendering Authority',          width: 36 },
-  { key: 'Tender Brief',                label: 'Tender Brief',                 width: 62 },
-  { key: 'City',                        label: 'City',                         width: 16 },
-  { key: 'State',                       label: 'State',                        width: 18 },
-  { key: 'Document Fees',               label: 'Document Fees',                width: 16 },
-  { key: 'EMD',                         label: 'EMD (₹)',                      width: 18 },
-  { key: 'Tender Value',                label: 'Tender Value (₹)',             width: 18 },
-  { key: 'Tender Type',                 label: 'Tender Type',                  width: 16 },
-  { key: 'Bidding Type',                label: 'Bidding Type',                 width: 16 },
-  { key: 'Competition Type',            label: 'Competition Type',             width: 18 },
-  { key: 'Publish Date',                label: 'Publish Date',                 width: 14 },
-  { key: 'Last Date of Bid Submission', label: 'Last Date of Bid Submission',  width: 26 },
-  { key: 'Tender Opening Date',         label: 'Tender Opening Date',          width: 22 },
-  { key: 'Address',                     label: 'Address',                      width: 34 },
-  { key: 'Information Source',          label: 'Information Source',           width: 30 },
-  { key: 'View Link',                   label: 'View Link',                    width: 60 },
+  { key: 'TDR', label: 'TDR', width: 14 },
+  { key: 'Tender No', label: 'Tender No', width: 26 },
+  { key: 'Tendering Authority', label: 'Tendering Authority', width: 36 },
+  { key: 'Tender Brief', label: 'Tender Brief', width: 62 },
+  { key: 'City', label: 'City', width: 16 },
+  { key: 'State', label: 'State', width: 18 },
+  { key: 'Document Fees', label: 'Document Fees', width: 16 },
+  { key: 'EMD', label: 'EMD (₹)', width: 18 },
+  { key: 'Tender Value', label: 'Tender Value (₹)', width: 18 },
+  { key: 'Tender Type', label: 'Tender Type', width: 16 },
+  { key: 'Bidding Type', label: 'Bidding Type', width: 16 },
+  { key: 'Competition Type', label: 'Competition Type', width: 18 },
+  { key: 'Publish Date', label: 'Publish Date', width: 14 },
+  { key: 'Last Date of Bid Submission', label: 'Last Date of Bid Submission', width: 26 },
+  { key: 'Tender Opening Date', label: 'Tender Opening Date', width: 22 },
+  { key: 'Address', label: 'Address', width: 34 },
+  { key: 'Information Source', label: 'Information Source', width: 30 },
+  { key: 'View Link', label: 'View Link', width: 60 },
   // ── Variable / catch-all
-  { key: 'Additional Details',   label: 'Additional Details',   width: 48 },
+  { key: 'Additional Details', label: 'Additional Details', width: 48 },
   { key: 'Bid Document Details', label: 'Bid Document Details', width: 70 },
 ];
 
@@ -232,18 +233,18 @@ function fillDataSheet(ws, cols, rows, tabArgb, headerColor) {
   });
 
   // Pre-compute column indices used in per-row overrides
-  const linkIdx       = cols.findIndex(c => c.key === 'View Link');
-  const addlIdx       = cols.findIndex(c => c.key === 'Additional Details');
-  const bidIdx        = cols.findIndex(c => c.key === 'Bid Document Details');
-  const companyIdx    = cols.findIndex(c => c.key === 'Company');
-  const statusIdx     = cols.findIndex(c => c.key === 'Status');
-  const emdIdx        = cols.findIndex(c => c.key === 'EMD');
-  const tvIdx         = cols.findIndex(c => c.key === 'Tender Value');
-  const bidStatusIdx  = cols.findIndex(c => c.key === 'Bid Status');
+  const linkIdx = cols.findIndex(c => c.key === 'View Link');
+  const addlIdx = cols.findIndex(c => c.key === 'Additional Details');
+  const bidIdx = cols.findIndex(c => c.key === 'Bid Document Details');
+  const companyIdx = cols.findIndex(c => c.key === 'Company');
+  const statusIdx = cols.findIndex(c => c.key === 'Status');
+  const emdIdx = cols.findIndex(c => c.key === 'EMD');
+  const tvIdx = cols.findIndex(c => c.key === 'Tender Value');
+  const bidStatusIdx = cols.findIndex(c => c.key === 'Bid Status');
 
   rows.forEach((r, i) => {
     const values = cols.map(c => r[c.key] ?? '');
-    const row    = ws.addRow(values);
+    const row = ws.addRow(values);
     dataRowStyle(row, i + 1, cols.length);
 
     const h = calcRowHeight(r, cols);
@@ -289,14 +290,14 @@ function fillDataSheet(ws, cols, rows, tabArgb, headerColor) {
     // Additional Details — compact Calibri, left-aligned, subtle colour
     if (addlIdx >= 0) {
       const cell = row.getCell(addlIdx + 1);
-      cell.font      = { name: 'Calibri', size: 9, color: { argb: 'FF1E3A5F' } };
+      cell.font = { name: 'Calibri', size: 9, color: { argb: 'FF1E3A5F' } };
       cell.alignment = { vertical: 'top', wrapText: true, horizontal: 'left' };
     }
 
     // Bid Document Details — monospace so pipe-delimited columns line up
     if (bidIdx >= 0) {
       const cell = row.getCell(bidIdx + 1);
-      cell.font      = { name: 'Consolas', size: 9 };
+      cell.font = { name: 'Consolas', size: 9 };
       cell.alignment = { vertical: 'top', wrapText: true, horizontal: 'left' };
     }
 
@@ -311,7 +312,7 @@ function fillDataSheet(ws, cols, rows, tabArgb, headerColor) {
 
   ws.autoFilter = {
     from: { row: 1, column: 1 },
-    to:   { row: 1 + rows.length, column: cols.length },
+    to: { row: 1 + rows.length, column: cols.length },
   };
 
   const endRow = rows.length + 10;
@@ -323,26 +324,38 @@ function fillDataSheet(ws, cols, rows, tabArgb, headerColor) {
     ws.addConditionalFormatting({
       ref: `${bsCol}2:${bsCol}${endRow}`,
       rules: [
-        { type: 'cellIs', operator: 'equal', formulae: ['"Accepted"'], priority: 1,
-          style: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF2E7D32' } },
-                   font: { name: 'Calibri', size: 10, bold: true, color: { argb: 'FFFFFFFF' } } } },
-        { type: 'cellIs', operator: 'equal', formulae: ['"Rejected"'], priority: 2,
-          style: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFC62828' } },
-                   font: { name: 'Calibri', size: 10, bold: true, color: { argb: 'FFFFFFFF' } } } },
+        {
+          type: 'cellIs', operator: 'equal', formulae: ['"Accepted"'], priority: 1,
+          style: {
+            fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF2E7D32' } },
+            font: { name: 'Calibri', size: 10, bold: true, color: { argb: 'FFFFFFFF' } }
+          }
+        },
+        {
+          type: 'cellIs', operator: 'equal', formulae: ['"Rejected"'], priority: 2,
+          style: {
+            fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFC62828' } },
+            font: { name: 'Calibri', size: 10, bold: true, color: { argb: 'FFFFFFFF' } }
+          }
+        },
       ],
     });
   }
 
-  // Row highlighting — Status=Important → amber yellow, Status=Filled → soft green
+  // Row highlighting — uses ISNUMBER(SEARCH) so comma-separated multi-values also match
   if (statusIdx >= 0) {
     const sCol = colNumToLetter(statusIdx + 1);
     ws.addConditionalFormatting({
       ref: `A2:${endCol}${endRow}`,
       rules: [
-        { type: 'expression', formulae: [`$${sCol}2="Important"`], priority: 100,
-          style: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF59D' } } } },
-        { type: 'expression', formulae: [`$${sCol}2="Filled"`],    priority: 101,
-          style: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFA5D6A7' } } } },
+        {
+          type: 'expression', formulae: [`ISNUMBER(SEARCH("Important",$${sCol}2))`], priority: 100,
+          style: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF59D' } } }
+        },
+        {
+          type: 'expression', formulae: [`ISNUMBER(SEARCH("Filled",$${sCol}2))`], priority: 101,
+          style: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFA5D6A7' } } }
+        },
       ],
     });
   }
@@ -360,10 +373,10 @@ async function buildExcel(sections) {
 
   const usedNames = new Set();
   function sectionBaseName(raw) {
-    return raw.replace(/\(\d+\)\s*$/, '').replace(/[\\/:?*[\]]/g, '').trim();
+    return raw.replace(/\(\d+\)\s*$/, '').replace(/[\\/:?*[\]]/g, '').trim() || 'Sheet';
   }
   function uniqueName(raw) {
-    let base = raw.replace(/[\\/:?*[\]]/g, '_').trim().slice(0, 31);
+    let base = raw.replace(/[\\/:?*[\]]/g, '_').trim().slice(0, 31) || 'Sheet';
     let attempt = base;
     let n = 2;
     while (usedNames.has(attempt.toLowerCase())) attempt = base.slice(0, 28) + '_' + (n++);
@@ -371,29 +384,46 @@ async function buildExcel(sections) {
     return attempt;
   }
 
-  // ── Master "All Sections" sheet
-  //    Column order: Company | Status | Filled Date | Filled By | Bid Status | Section | …
+  const allRows = sections.flatMap(s => s.tenders.map(t => ({ Section: s.section, ...t })));
+
+  // Use fixed columns, dropping the unused Bid Document Details
+  const finalCols = COLS.filter(c => c.key !== 'Bid Document Details');
+
   const USER_INPUT_KEYS = new Set(['Company', 'Status', 'Filled Date', 'Filled By', 'Bid Status']);
   const masterCols = [
-    ...COLS.filter(c => USER_INPUT_KEYS.has(c.key)),          // first 5 user-input cols
-    { key: 'Section', label: 'Section', width: 28 },           // section name
-    ...COLS.filter(c => !USER_INPUT_KEYS.has(c.key) && c.key !== 'Bid Document Details'),
+    ...finalCols.filter(c => USER_INPUT_KEYS.has(c.key)),
+    { key: 'Section', label: 'Section', width: 28 },
+    ...finalCols.filter(c => !USER_INPUT_KEYS.has(c.key)),
   ];
-  const allRows  = sections.flatMap(s => s.tenders.map(t => ({ Section: s.section, ...t })));
-  const lastCol  = colNumToLetter(masterCols.length);
-  const maxRow   = Math.max(allRows.length + 10, 1000);
-  const allWs    = wb.addWorksheet(uniqueName('All Sections'));
-  fillDataSheet(allWs, masterCols, allRows, 'FF2C3E50', '2C3E50');
 
-  // Shared protection — allow reading/sorting, block formula edits
+  const lastCol = colNumToLetter(masterCols.length);
+  const maxRow  = Math.max(allRows.length + 10, 1000);
+
+  // Shared protection options — users can select, sort, and filter but cannot
+  // edit locked cells or delete rows.
   const sheetProtectOpts = {
     selectLockedCells: true, selectUnlockedCells: true,
     sort: true, autoFilter: true,
     formatCells: false, insertRows: false, deleteRows: false,
   };
 
-  // ── Helper: locked filter sheet driven by a FILTER formula
-  //    Also applies the same row-highlighting CF as the data sheets.
+  // ── "All Sections" — only the 5 user-input columns (A–E) are editable.
+  //    Everything else (scraped data) is locked.
+  const allWs = wb.addWorksheet(uniqueName('All Sections'));
+  fillDataSheet(allWs, masterCols, allRows, 'FF2C3E50', '2C3E50');
+
+  // Unlock input columns A–E; keep header row (row 1) locked in all columns.
+  for (let c = 1; c <= 5; c++) {
+    allWs.getColumn(c).protection = { locked: false };
+    allWs.getRow(1).getCell(c).protection = { locked: true };
+  }
+  // Add tooltip hints explaining comma-separated multi-select
+  allWs.getRow(1).getCell(1).note = 'Multi-select: type comma-separated values, e.g.  Gravity,Total Tech';
+  allWs.getRow(1).getCell(2).note = 'Multi-select: type comma-separated values, e.g.  Important,Filled';
+  allWs.protect('', sheetProtectOpts);
+
+  // ── Helper: fully-locked filter sheet with FILTER formula.
+  //    Uses ISNUMBER(SEARCH(...)) so comma-separated multi-values still match.
   function makeFilterSheet(name, tabArgb, hdrHex, filterCol, filterValue) {
     const ws = wb.addWorksheet(uniqueName(name));
     ws.properties = { tabColor: { argb: tabArgb } };
@@ -402,18 +432,20 @@ async function buildExcel(sections) {
     const hdr     = ws.getRow(1);
     hdr.values    = masterCols.map(c => c.label);
     headerStyle(hdr, hdrHex, masterCols.length);
-    const src  = `'All Sections'!A2:${lastCol}${maxRow}`;
-    const crit = `'All Sections'!${filterCol}2:${filterCol}${maxRow}`;
+
+    const src       = `'All Sections'!A2:${lastCol}${maxRow}`;
+    const critRange = `'All Sections'!${filterCol}2:${filterCol}${maxRow}`;
     ws.getCell('A2').value = {
-      formula: `IFERROR(FILTER(${src},${crit}="${filterValue}"),IF(ROWS(A2:A2)=1,"No tenders assigned to ${name}",""))`,
+      formula: `IFERROR(FILTER(${src},ISNUMBER(SEARCH("${filterValue}",${critRange}))),IF(ROWS(A2:A2)=1,"No tenders assigned to ${name}",""))`,
     };
-    // Row highlighting (Status col = B in masterCols)
+
+    // Row highlighting — ISNUMBER(SEARCH) matches partial/multi-value Status cells
     ws.addConditionalFormatting({
       ref: `A2:${lastCol}${maxRow}`,
       rules: [
-        { type: 'expression', formulae: ['$B2="Important"'], priority: 100,
+        { type: 'expression', formulae: ['ISNUMBER(SEARCH("Important",$B2))'], priority: 100,
           style: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF59D' } } } },
-        { type: 'expression', formulae: ['$B2="Filled"'],    priority: 101,
+        { type: 'expression', formulae: ['ISNUMBER(SEARCH("Filled",$B2))'],    priority: 101,
           style: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFA5D6A7' } } } },
       ],
     });
@@ -422,27 +454,29 @@ async function buildExcel(sections) {
   }
 
   // ── Sheet order: All Sections → Important → Filled → Corrigendum → Gravity → TT → QM → sections
-
-  makeFilterSheet('Important', 'FFB71C1C', 'B71C1C', 'B', 'Important');
-  makeFilterSheet('Filled',    'FF00695C', '00695C', 'B', 'Filled');
+  makeFilterSheet('Important',  'FFB71C1C', 'B71C1C', 'B', 'Important');
+  makeFilterSheet('Filled',     'FF00695C', '00695C', 'B', 'Filled');
 
   const corrigendumRows = allRows.filter(r =>
     Object.values(r).some(v => typeof v === 'string' && v.toLowerCase().includes('corrigendum'))
   );
   if (corrigendumRows.length) {
-    const ws = wb.addWorksheet('Corrigendum');
-    fillDataSheet(ws, masterCols, corrigendumRows, 'FFFF6F00', 'E65100');
+    const corrWs = wb.addWorksheet('Corrigendum');
+    fillDataSheet(corrWs, masterCols, corrigendumRows, 'FFFF6F00', 'E65100');
+    corrWs.protect('', sheetProtectOpts);
   }
 
   makeFilterSheet('Gravity',    'FF1B5E20', '1B5E20', 'A', 'Gravity');
   makeFilterSheet('Total Tech', 'FF1565C0', '1565C0', 'A', 'Total Tech');
   makeFilterSheet('Quickman',   'FF4A148C', '4A148C', 'A', 'Quickman');
 
+  // Per-section sheets — fully locked (all edits happen in All Sections)
   sections.forEach((sec, idx) => {
     const tabArgb   = TAB_COLORS[idx % TAB_COLORS.length];
     const headerHex = tabArgb.slice(2);
     const ws        = wb.addWorksheet(uniqueName(sectionBaseName(sec.section)));
-    fillDataSheet(ws, COLS, sec.tenders, tabArgb, headerHex);
+    fillDataSheet(ws, finalCols, sec.tenders, tabArgb, headerHex);
+    ws.protect('', sheetProtectOpts);
   });
 
   return wb.xlsx.writeBuffer();
@@ -488,134 +522,6 @@ function parseDailyDigest($) {
 }
 
 // ══════════════════════════════════════════════════════════════
-//  PHASE 2 — Bid document parsers
-//  Both return a plain string (newline-separated rows / pairs).
-//  All tabular and numerical data (manpower, costs, quantities,
-//  BOQ rows, etc.) is captured as-is and stored in one cell.
-// ══════════════════════════════════════════════════════════════
-
-async function parsePdfBidDocument(url) {
-  let parser;
-  try {
-    const { data } = await axios.get(url, { responseType: 'arraybuffer', timeout: 20000, maxRedirects: 4 });
-    parser = new PDFParse({ data: new Uint8Array(data) });
-
-    const [tableResult, textResult] = await Promise.all([
-      parser.getTable().catch(() => ({ pages: [] })),
-      parser.getText().catch(() => ({ text: '' })),
-    ]);
-
-    const tableCellTexts = new Set();
-    const tableBlocks    = [];
-
-    for (const page of tableResult.pages) {
-      for (const table of (page.tables || [])) {
-        if (!table?.length) continue;
-        const rows = [];
-        table.forEach((row, rowIdx) => {
-          const cells = row.map(c => (c || '').trim());
-          if (!cells.some(Boolean)) return;
-          cells.forEach(c => { if (c) tableCellTexts.add(c); });
-          const line = cells.join('  |  ');
-          rows.push(line);
-          if (rowIdx === 0) rows.push('─'.repeat(Math.min(line.length, 60)));
-        });
-        if (rows.length) tableBlocks.push(rows.join('\n'));
-      }
-    }
-
-    const seen = new Set(tableCellTexts);
-    const textLines = [];
-    let blankRun = 0;
-
-    for (const rawLine of (textResult?.text || '').split('\n')) {
-      const t = rawLine.trim();
-      if (!t || /^\d{1,3}$/.test(t) || /^Page\s+\d+/i.test(t) || seen.has(t)) {
-        if (textLines.length && blankRun < 1) { textLines.push(''); blankRun++; }
-        continue;
-      }
-      blankRun = 0;
-      seen.add(t);
-      textLines.push(rawLine.trimEnd());
-    }
-
-    const sections = [];
-    if (tableBlocks.length) sections.push(tableBlocks.join('\n\n'));
-    const plainText = textLines.join('\n').trim();
-    if (plainText) sections.push(plainText);
-
-    return cleanBidText(sections.join('\n\n'));
-  } catch { return ''; } finally {
-    if (parser) await parser.destroy().catch(() => {});
-  }
-}
-
-async function parseHtmlBidDocument(url) {
-  try {
-    const { data } = await axios.get(url, { headers: HEADERS, timeout: 15000, maxRedirects: 4 });
-    const $        = cheerio.load(data);
-    $('script, style, nav, footer, header').remove();
-
-    const bodyText = $('body').text().replace(/\s{3,}/g, '\n').trim();
-    const sections = [];
-    const seen     = new Set();
-
-    const addUniq = (arr, line) => {
-      const l = line.trimEnd();
-      if (!l || l.length < 2 || seen.has(l)) return false;
-      seen.add(l); arr.push(l); return true;
-    };
-
-    $('table').each((_, table) => {
-      const $tbl  = $(table);
-      const cap   = clean($tbl.find('caption').first().text());
-      const prev  = clean($tbl.prevAll('h1,h2,h3,h4,h5,h6,p.heading,.section-title').first().text());
-      const title = cap || prev;
-      const tableLines = [];
-      $tbl.find('tr').each((rowIdx, tr) => {
-        const cells = [];
-        $(tr).find('th, td').each((_, td) => cells.push(clean($(td).text())));
-        if (cells.filter(Boolean).length >= 2) {
-          const line = cells.join('  |  ');
-          addUniq(tableLines, line);
-          if (rowIdx === 0 && tableLines.length) tableLines.push('─'.repeat(Math.min(line.length, 60)));
-        }
-      });
-      if (tableLines.length) {
-        const block = [];
-        if (title) block.push(`▌ ${title}`);
-        block.push(...tableLines);
-        sections.push(block.join('\n'));
-      }
-    });
-
-    $('dl').each((_, dl) => {
-      const dlLines = [];
-      $(dl).find('dt').each((_, dt) => {
-        const key = clean($(dt).text());
-        const val = clean($(dt).next('dd').text());
-        if (key && val) addUniq(dlLines, `${key}: ${val}`);
-      });
-      if (dlLines.length) sections.push(dlLines.join('\n'));
-    });
-
-    if (!sections.length) {
-      const lines    = bodyText.split('\n').map(l => l.trim()).filter(Boolean);
-      const fallback = [];
-      for (let i = 0; i < lines.length - 1; i++) {
-        const k = lines[i], v = lines[i + 1];
-        if (k.length > 3 && k.length < 100 && v && !/^[\d\.]+$/.test(k)) {
-          addUniq(fallback, `${k}: ${v}`); i++;
-        }
-      }
-      if (fallback.length) sections.push(fallback.join('\n'));
-    }
-
-    return cleanBidText(sections.join('\n\n'));
-  } catch { return ''; }
-}
-
-// ══════════════════════════════════════════════════════════════
 //  PHASE 2 — Scrape one detail page
 // ══════════════════════════════════════════════════════════════
 
@@ -649,54 +555,35 @@ async function scrapeTenderDetail(viewLink) {
       if (!MAPPED_KEYS.has(k)) additionalLines.push(`${k}: ${v}`);
     }
 
-    // Locate bid document link (HTML preferred over PDF)
-    let htmlLink = null, pdfLink = null;
-    $('a').each((_, a) => {
-      const href = $(a).attr('href') || '';
-      if (href.includes('tenderfiles.com')) {
-        if (!htmlLink && href.endsWith('.html')) htmlLink = href;
-        if (!pdfLink && href.endsWith('.pdf')) pdfLink = href;
-      }
-    });
-
-    let bidDocDetails = '';
-    if (htmlLink) bidDocDetails = await parseHtmlBidDocument(htmlLink);
-    else if (pdfLink) bidDocDetails = await parsePdfBidDocument(pdfLink);
-
-    // If the detail page shows "Refer Document" / blank, try to pull the real
-    // tender value out of the bid document text we just extracted.
     let tenderValue = normalizeAmount(record['Tender Value']);
-    if (needsDocLookup(record['Tender Value']) && bidDocDetails) {
-      const fromDoc = extractAmountFromBidDoc(bidDocDetails);
-      if (typeof fromDoc === 'number') tenderValue = fromDoc;
-    }
+
+
 
     return {
-      'Company':     '',
-      'Status':      '',
+      'Company': '',
+      'Status': '',
       'Filled Date': '',
-      'Filled By':   '',
-      'Bid Status':  '',
-      'TDR':                         record['TDR']                                   || 'N/A',
-      'Tender No':                   record['Tender No'] || record['Tender ID']      || 'N/A',
-      'Tendering Authority':         record['Tendering Authority'] || record['Company Name'] || 'N/A',
-      'Tender Brief':                record['Tender Brief']                          || 'N/A',
-      'City':                        record['City']                                  || 'N/A',
-      'State':                       record['State']                                 || 'N/A',
-      'Document Fees':               record['Document Fees']                         || 'N/A',
-      'EMD':                         normalizeAmount(record['EMD']),
-      'Tender Value':                tenderValue,
-      'Tender Type':                 record['Tender Type']                           || 'N/A',
-      'Bidding Type':                record['Bidding Type']                          || 'N/A',
-      'Competition Type':            record['Competition Type']                      || 'N/A',
-      'Publish Date':                record['Publish Date']                          || 'N/A',
-      'Last Date of Bid Submission': record['Last Date of Bid Submission']           || 'N/A',
-      'Tender Opening Date':         record['Tender Opening Date']                   || 'N/A',
-      'Address':                     record['Address']                               || 'N/A',
-      'Information Source':          record['Information Source']                    || 'N/A',
-      'View Link':                   viewLink,
-      'Additional Details':          additionalLines.join('\n')                      || 'N/A',
-      'Bid Document Details':        bidDocDetails                                   || 'N/A',
+      'Filled By': '',
+      'Bid Status': '',
+      'TDR': record['TDR'] || 'N/A',
+      'Tender No': record['Tender No'] || record['Tender ID'] || 'N/A',
+      'Tendering Authority': record['Tendering Authority'] || record['Company Name'] || 'N/A',
+      'Tender Brief': record['Tender Brief'] || 'N/A',
+      'City': record['City'] || 'N/A',
+      'State': record['State'] || 'N/A',
+      'Document Fees': record['Document Fees'] || 'N/A',
+      'EMD': normalizeAmount(record['EMD']),
+      'Tender Value': tenderValue,
+      'Tender Type': record['Tender Type'] || 'N/A',
+      'Bidding Type': record['Bidding Type'] || 'N/A',
+      'Competition Type': record['Competition Type'] || 'N/A',
+      'Publish Date': record['Publish Date'] || 'N/A',
+      'Last Date of Bid Submission': record['Last Date of Bid Submission'] || 'N/A',
+      'Tender Opening Date': record['Tender Opening Date'] || 'N/A',
+      'Address': record['Address'] || 'N/A',
+      'Information Source': record['Information Source'] || 'N/A',
+      'View Link': viewLink,
+      'Additional Details': additionalLines.join('\n') || 'N/A'
     };
   } catch (e) {
     return {
