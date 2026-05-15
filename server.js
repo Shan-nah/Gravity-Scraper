@@ -1,17 +1,75 @@
-const express = require('express');
-const axios = require('axios');
-const cheerio = require('cheerio');
-const ExcelJS = require('exceljs');
-const cors = require('cors');
-const path = require('path');
-const fs = require('fs');
-const crypto = require('crypto');
+const express  = require('express');
+const axios    = require('axios');
+const cheerio  = require('cheerio');
+const ExcelJS  = require('exceljs');
+const cors     = require('cors');
+const path     = require('path');
+const fs       = require('fs');
+const crypto   = require('crypto');
+const { Readable } = require('stream');
 
-const app = express();
+const app  = express();
 const PORT = process.env.PORT || 8080;
 
-process.on('uncaughtException', (err) => console.error('Uncaught Exception:', err));
-process.on('unhandledRejection', (err) => console.error('Unhandled Rejection:', err));
+process.on('uncaughtException',  err => console.error('Uncaught Exception:', err));
+process.on('unhandledRejection', err => console.error('Unhandled Rejection:', err));
+
+// ── Google Drive / Sheets upload (optional)
+//    Set GOOGLE_SERVICE_ACCOUNT_KEY in .env (JSON string or file path)
+//    Optionally set GOOGLE_SHEETS_SHARED_WITH=your@email.com for editor access
+let driveClient = null;
+(function initGoogleDrive() {
+  const raw = process.env.GOOGLE_SERVICE_ACCOUNT_KEY;
+  if (!raw) return;
+  try {
+    const { google } = require('googleapis');
+    const creds = raw.trim().startsWith('{') ? JSON.parse(raw) : require(path.resolve(raw));
+    const auth  = new google.auth.GoogleAuth({
+      credentials: creds,
+      scopes: ['https://www.googleapis.com/auth/drive'],
+    });
+    driveClient = google.drive({ version: 'v3', auth });
+    console.log('✓  Google Drive enabled — scrapes will also create a Google Sheet\n');
+  } catch (e) {
+    console.warn('Google Drive init failed:', e.message);
+  }
+})();
+
+async function uploadToGoogleSheets(xlsxBuffer, title) {
+  if (!driveClient) return null;
+  try {
+    const res = await driveClient.files.create({
+      requestBody: {
+        name: title || 'Tender Data',
+        mimeType: 'application/vnd.google-apps.spreadsheet',
+      },
+      media: {
+        mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        body: Readable.from(xlsxBuffer),
+      },
+      fields: 'id',
+    });
+    const fileId = res.data.id;
+    // Anyone with the link can edit
+    await driveClient.permissions.create({
+      fileId,
+      requestBody: { role: 'writer', type: 'anyone' },
+    });
+    // Also share directly with a specific Google account if configured
+    const sharedWith = process.env.GOOGLE_SHEETS_SHARED_WITH;
+    if (sharedWith) {
+      await driveClient.permissions.create({
+        fileId,
+        requestBody: { role: 'writer', type: 'user', emailAddress: sharedWith },
+        sendNotificationEmail: false,
+      });
+    }
+    return `https://docs.google.com/spreadsheets/d/${fileId}/edit`;
+  } catch (e) {
+    console.warn('Google Sheets upload failed:', e.message);
+    return null;
+  }
+}
 
 app.use(cors());
 app.use(express.json());
@@ -677,16 +735,20 @@ app.get('/scrape-deep', async (req, res) => {
       sseWrite(res, 'section_done', { section: sec.section, count: records.length });
     }
 
-    sseWrite(res, 'status', { phase: 3, message: 'Building formatted Excel file…' });
+    sseWrite(res, 'status', { phase: 3, message: 'Building Excel file…' });
     const excelBuf = await buildExcel(enriched);
 
-    const token = crypto.randomBytes(16).toString('hex');
+    const token    = crypto.randomBytes(16).toString('hex');
     const safeName = pageTitle.replace(/[^a-z0-9]/gi, '_').slice(0, 40) || 'tender_data';
     const filePath = path.join(TMP_DIR, `${token}.xlsx`);
     fs.writeFileSync(filePath, excelBuf);
-    setTimeout(() => { try { fs.unlinkSync(filePath); } catch (_) { } }, 30 * 60 * 1000);
+    setTimeout(() => { try { fs.unlinkSync(filePath); } catch (_) {} }, 30 * 60 * 1000);
 
-    sseWrite(res, 'done', { token, filename: safeName, totalTenders: total, sections: sections.length, pageTitle });
+    // Upload to Google Sheets in parallel with returning the done event
+    sseWrite(res, 'status', { phase: 3, message: 'Uploading to Google Sheets…' });
+    const sheetsUrl = await uploadToGoogleSheets(excelBuf, pageTitle);
+
+    sseWrite(res, 'done', { token, filename: safeName, totalTenders: total, sections: sections.length, pageTitle, sheetsUrl });
   } catch (err) {
     sseWrite(res, 'error', { message: err.message });
   } finally {
