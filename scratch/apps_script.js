@@ -56,6 +56,33 @@ function doPost(e) {
     //      The range protections below prevent them from editing the locked cells.
     Drive.Permissions.create({ role: 'writer', type: 'anyone' }, fileId);
 
+    // 2b ── Sort All Sections: GeM tenders first (stable — preserves relative order within each group)
+    try {
+      var spreadsheet  = SpreadsheetApp.openById(fileId);
+      var allSheet     = spreadsheet.getSheetByName('All Sections');
+      if (allSheet && allSheet.getLastRow() > 1) {
+        var lastRow  = allSheet.getLastRow();
+        var lastCol  = allSheet.getLastColumn();
+        var headers  = allSheet.getRange(1, 1, 1, lastCol).getValues()[0];
+        var infoIdx  = -1;
+        for (var hi = 0; hi < headers.length; hi++) {
+          if (String(headers[hi]).indexOf('Information Source') !== -1) { infoIdx = hi; break; }
+        }
+        if (infoIdx >= 0) {
+          var dataRange = allSheet.getRange(2, 1, lastRow - 1, lastCol);
+          var rows      = dataRange.getValues();
+          var gemRows = [], otherRows = [];
+          for (var ri = 0; ri < rows.length; ri++) {
+            var src = String(rows[ri][infoIdx] || '').toLowerCase();
+            if (src.indexOf('gem') !== -1) gemRows.push(rows[ri]);
+            else                           otherRows.push(rows[ri]);
+          }
+          dataRange.setValues(gemRows.concat(otherRows));
+          SpreadsheetApp.flush(); // commit before Sheets API reads metadata
+        }
+      }
+    } catch (sortErr) { /* non-fatal — continue if sort fails */ }
+
     // 3 ── Fetch all sheet metadata
     var ss     = Sheets.Spreadsheets.get(fileId);
     var sheets = ss.sheets;
