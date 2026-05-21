@@ -333,12 +333,12 @@ function fillDataSheet(ws, cols, rows, tabArgb, headerColor) {
       };
     }
 
-    // Hyperlink on View Link column
+    // Hyperlink on View Link column — use HYPERLINK formula so it works in both Excel and Google Sheets
     if (linkIdx >= 0) {
       const cell = row.getCell(linkIdx + 1);
       const href = r['View Link'];
       if (href && href.startsWith('http')) {
-        cell.value = { text: 'View Tender', hyperlink: href };
+        cell.value = { formula: `=HYPERLINK("${href}","View Tender")` };
         cell.font = { name: 'Calibri', size: 10, color: { argb: 'FF1565C0' }, underline: true };
       }
     }
