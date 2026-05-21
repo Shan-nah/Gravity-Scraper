@@ -1,3 +1,4 @@
+require('dotenv').config();
 const express  = require('express');
 const axios    = require('axios');
 const cheerio  = require('cheerio');
@@ -36,37 +37,41 @@ let driveClient = null;
 })();
 
 async function uploadToGoogleSheets(xlsxBuffer, title) {
-  if (!driveClient) return null;
-  try {
-    const res = await driveClient.files.create({
-      requestBody: {
-        name: title || 'Tender Data',
-        mimeType: 'application/vnd.google-apps.spreadsheet',
-      },
-      media: {
-        mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-        body: Readable.from(xlsxBuffer),
-      },
-      fields: 'id',
-    });
-    const fileId = res.data.id;
-    // Anyone with the link can edit
-    await driveClient.permissions.create({
-      fileId,
-      requestBody: { role: 'writer', type: 'anyone' },
-    });
-    // Also share directly with a specific Google account if configured
-    const sharedWith = process.env.GOOGLE_SHEETS_SHARED_WITH;
-    if (sharedWith) {
-      await driveClient.permissions.create({
-        fileId,
-        requestBody: { role: 'writer', type: 'user', emailAddress: sharedWith },
-        sendNotificationEmail: false,
+  const scriptUrl = process.env.GOOGLE_SCRIPT_URL;
+  if (!scriptUrl) {
+    if (!driveClient) return null;
+    // Fallback to direct drive upload (will likely fail on personal accounts due to 0 quota)
+    try {
+      const res = await driveClient.files.create({
+        requestBody: { name: title || 'Tender Data', mimeType: 'application/vnd.google-apps.spreadsheet' },
+        media: { mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', body: Readable.from(xlsxBuffer) },
+        fields: 'id',
       });
+      const fileId = res.data.id;
+      await driveClient.permissions.create({ fileId, requestBody: { role: 'writer', type: 'anyone' } });
+      return `https://docs.google.com/spreadsheets/d/${fileId}/edit`;
+    } catch (e) {
+      console.warn('Direct Google Sheets upload failed:', e.message);
+      return null;
     }
-    return `https://docs.google.com/spreadsheets/d/${fileId}/edit`;
+  }
+
+  try {
+    const response = await axios.post(scriptUrl, {
+      base64: xlsxBuffer.toString('base64'),
+      filename: (title || 'Tender Data') + '.xlsx'
+    }, { timeout: 30000 });
+
+    if (response.data && response.data.url) {
+      console.log('✓  Google Sheet created via Bridge:', response.data.url);
+      return response.data.url;
+    }
+    if (response.data && response.data.error) {
+      console.warn('Bridge reported error:', response.data.error);
+    }
+    return null;
   } catch (e) {
-    console.warn('Google Sheets upload failed:', e.message);
+    console.warn('Google Script Bridge failed:', e.message);
     return null;
   }
 }
@@ -186,7 +191,7 @@ function validateUrl(rawUrl) {
 const COLS = [
   // ── User-input columns (blank on scrape; filled by user in Excel)
   { key: 'Company', label: 'Company', width: 16 },
-  { key: 'Status', label: 'Status', width: 14 },
+  { key: 'Important', label: 'Important', width: 12 },
   { key: 'Filled Date', label: 'Filled Date', width: 16 },
   { key: 'Filled By', label: 'Filled By', width: 18 },
   { key: 'Bid Status', label: 'Bid Status', width: 14 },
@@ -249,7 +254,7 @@ function dataRowStyle(row, rowIdx, colCount) {
     const cell = row.getCell(c);
     cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bg } };
     cell.font = { name: 'Calibri', size: 10 };
-    cell.alignment = { vertical: 'top', wrapText: true };
+    cell.alignment = { vertical: 'top', wrapText: false };
     cell.border = {
       top: { style: 'hair', color: { argb: 'FFCCE0F5' } },
       bottom: { style: 'hair', color: { argb: 'FFCCE0F5' } },
@@ -259,17 +264,7 @@ function dataRowStyle(row, rowIdx, colCount) {
   }
 }
 
-// Calculate row height based on the number of newlines in text-heavy cells
-function calcRowHeight(r, cols) {
-  let maxLines = 1;
-  cols.forEach(c => {
-    if (TEXT_WRAP_COLS.has(c.key)) {
-      const val = r[c.key] || '';
-      maxLines = Math.max(maxLines, (val.match(/\n/g) || []).length + 1);
-    }
-  });
-  return maxLines > 2 ? Math.min(maxLines * 14, 409) : undefined; // 409pt = Excel max
-}
+
 
 // ══════════════════════════════════════════════════════════════
 //  DATA SHEET — coloured headers, zebra rows, frozen row, filter
@@ -294,36 +289,39 @@ function fillDataSheet(ws, cols, rows, tabArgb, headerColor) {
   const linkIdx = cols.findIndex(c => c.key === 'View Link');
   const addlIdx = cols.findIndex(c => c.key === 'Additional Details');
   const bidIdx = cols.findIndex(c => c.key === 'Bid Document Details');
-  const companyIdx = cols.findIndex(c => c.key === 'Company');
-  const statusIdx = cols.findIndex(c => c.key === 'Status');
+  const companyIdx   = cols.findIndex(c => c.key === 'Company');
+  const importantIdx = cols.findIndex(c => c.key === 'Important');
   const emdIdx = cols.findIndex(c => c.key === 'EMD');
   const tvIdx = cols.findIndex(c => c.key === 'Tender Value');
   const bidStatusIdx = cols.findIndex(c => c.key === 'Bid Status');
 
   rows.forEach((r, i) => {
-    const values = cols.map(c => r[c.key] ?? '');
+    const values = cols.map(c => {
+      const v = r[c.key] ?? '';
+      return typeof v === 'string' ? v.replace(/\n/g, ' | ') : v;
+    });
     const row = ws.addRow(values);
     dataRowStyle(row, i + 1, cols.length);
 
-    const h = calcRowHeight(r, cols);
-    if (h) row.height = h;
+    row.height = 18;
 
-    // Company dropdown — Gravity / Total Tech / Quickman
+    // Company dropdown — arrow list; for multi-company type comma-separated after selecting
     if (companyIdx >= 0) {
       row.getCell(companyIdx + 1).dataValidation = {
         type: 'list', allowBlank: true,
         formulae: ['"Gravity,Total Tech,Quickman"'],
         showErrorMessage: false,
+        showInputMessage: true,
+        promptTitle: 'Company',
+        prompt: 'Pick one or type comma-separated e.g. Gravity,Total Tech',
       };
     }
 
-    // Status dropdown — Important / Filled
-    if (statusIdx >= 0) {
-      row.getCell(statusIdx + 1).dataValidation = {
-        type: 'list', allowBlank: true,
-        formulae: ['"Important,Filled"'],
-        showErrorMessage: false,
-      };
+    // Important — checkbox (TRUE/FALSE boolean)
+    if (importantIdx >= 0) {
+      const cell = row.getCell(importantIdx + 1);
+      if (cell.value === '' || cell.value == null) cell.value = false;
+      cell.dataValidation = { type: 'list', allowBlank: true, formulae: ['"TRUE,FALSE"'], showErrorMessage: false };
     }
 
     // Bid Status dropdown — Accepted / Rejected
@@ -349,14 +347,14 @@ function fillDataSheet(ws, cols, rows, tabArgb, headerColor) {
     if (addlIdx >= 0) {
       const cell = row.getCell(addlIdx + 1);
       cell.font = { name: 'Calibri', size: 9, color: { argb: 'FF1E3A5F' } };
-      cell.alignment = { vertical: 'top', wrapText: true, horizontal: 'left' };
+      cell.alignment = { vertical: 'middle', wrapText: false, horizontal: 'left' };
     }
 
     // Bid Document Details — monospace so pipe-delimited columns line up
     if (bidIdx >= 0) {
       const cell = row.getCell(bidIdx + 1);
       cell.font = { name: 'Consolas', size: 9 };
-      cell.alignment = { vertical: 'top', wrapText: true, horizontal: 'left' };
+      cell.alignment = { vertical: 'middle', wrapText: false, horizontal: 'left' };
     }
 
     // EMD and Tender Value — comma-separated number format so Excel sorts numerically
@@ -400,20 +398,14 @@ function fillDataSheet(ws, cols, rows, tabArgb, headerColor) {
     });
   }
 
-  // Row highlighting — uses ISNUMBER(SEARCH) so comma-separated multi-values also match
-  if (statusIdx >= 0) {
-    const sCol = colNumToLetter(statusIdx + 1);
+  // Row highlighting — yellow when Important is checked
+  if (importantIdx >= 0) {
+    const impCol = colNumToLetter(importantIdx + 1);
     ws.addConditionalFormatting({
       ref: `A2:${endCol}${endRow}`,
       rules: [
-        {
-          type: 'expression', formulae: [`ISNUMBER(SEARCH("Important",$${sCol}2))`], priority: 100,
-          style: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF59D' } } }
-        },
-        {
-          type: 'expression', formulae: [`ISNUMBER(SEARCH("Filled",$${sCol}2))`], priority: 101,
-          style: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFA5D6A7' } } }
-        },
+        { type: 'expression', formulae: [`$${impCol}2=TRUE`], priority: 101,
+          style: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF59D' } } } },
       ],
     });
   }
@@ -444,97 +436,232 @@ async function buildExcel(sections) {
 
   const allRows = sections.flatMap(s => s.tenders.map(t => ({ Section: s.section, ...t })));
 
+  // Sort gems.gov tenders first across all sections (stable — preserves original order within each group)
+  allRows.sort((a, b) => {
+    const aG = /gems/i.test(String(a['Information Source'] || '')) ? 0 : 1;
+    const bG = /gems/i.test(String(b['Information Source'] || '')) ? 0 : 1;
+    return aG - bG;
+  });
+
   // Use fixed columns, dropping the unused Bid Document Details
   const finalCols = COLS.filter(c => c.key !== 'Bid Document Details');
 
-  const USER_INPUT_KEYS = new Set(['Company', 'Status', 'Filled Date', 'Filled By', 'Bid Status']);
+  // Columns in All Sections — Filled / Filled Date / Filled By / Bid Status live only on company sheets
+  const MASTER_INPUT_KEYS = new Set(['Company', 'Important']);
+  const ALL_INPUT_KEYS    = new Set(['Company', 'Important', 'Filled Date', 'Filled By', 'Bid Status']);
   const masterCols = [
-    ...finalCols.filter(c => USER_INPUT_KEYS.has(c.key)),
+    ...finalCols.filter(c => MASTER_INPUT_KEYS.has(c.key)),
     { key: 'Section', label: 'Section', width: 28 },
-    ...finalCols.filter(c => !USER_INPUT_KEYS.has(c.key)),
+    ...finalCols.filter(c => !ALL_INPUT_KEYS.has(c.key)),
   ];
 
   const lastCol = colNumToLetter(masterCols.length);
   const maxRow  = Math.max(allRows.length + 10, 1000);
-
-  // Shared protection options — users can select, sort, and filter but cannot
-  // edit locked cells or delete rows.
-  const sheetProtectOpts = {
-    selectLockedCells: true, selectUnlockedCells: true,
-    sort: true, autoFilter: true,
-    formatCells: false, insertRows: false, deleteRows: false,
-  };
+  // Dynamic column letter for Section — used in Corrigendum and section-tab filter formulas
+  const sectionColLetter = colNumToLetter(masterCols.findIndex(c => c.key === 'Section') + 1);
 
   // ── "All Sections" — only the 5 user-input columns (A–E) are editable.
   //    Everything else (scraped data) is locked.
   const allWs = wb.addWorksheet(uniqueName('All Sections'));
   fillDataSheet(allWs, masterCols, allRows, 'FF2C3E50', '2C3E50');
 
-  // Unlock input columns A–E; keep header row (row 1) locked in all columns.
-  for (let c = 1; c <= 5; c++) {
+  // Unlock Company (A) and Important (B) in All Sections
+  for (let c = 1; c <= 2; c++) {
     allWs.getColumn(c).protection = { locked: false };
     allWs.getRow(1).getCell(c).protection = { locked: true };
   }
-  // Add tooltip hints explaining comma-separated multi-select
-  allWs.getRow(1).getCell(1).note = 'Multi-select: type comma-separated values, e.g.  Gravity,Total Tech';
-  allWs.getRow(1).getCell(2).note = 'Multi-select: type comma-separated values, e.g.  Important,Filled';
-  allWs.protect('', sheetProtectOpts);
+  allWs.getRow(1).getCell(1).note = 'Select company or type comma-separated e.g. Gravity,Total Tech';
+  allWs.getRow(1).getCell(2).note = 'Check this box to mark the tender as Important';
 
-  // ── Helper: fully-locked filter sheet with FILTER formula.
-  //    Uses ISNUMBER(SEARCH(...)) so comma-separated multi-values still match.
-  function makeFilterSheet(name, tabArgb, hdrHex, filterCol, filterValue) {
+  //  Helper: builds a formula-driven filter sheet.
+  //
+  //  isCompanySheet = true:
+  //    • Columns A = "Filled Date", B = "Filled By" (editable, placed first)
+  //    • Columns C onwards = FILTER formula result (Company col skipped via CHOOSECOLS)
+  //    • No sheet protection (Apps Script locks cols C+ via range protection)
+  //  Other sheets:
+  //    • Columns A onwards = FILTER formula result (all masterCols)
+  //    • Apps Script applies data-row range protection
+  function makeFilterSheet(name, tabArgb, hdrHex, filterCol, filterValue, options = {}) {
     const ws = wb.addWorksheet(uniqueName(name));
     ws.properties = { tabColor: { argb: tabArgb } };
     ws.views      = [{ state: 'frozen', ySplit: 1, showGridLines: true }];
-    ws.columns    = masterCols.map(c => ({ header: c.label, key: c.key, width: c.width }));
-    const hdr     = ws.getRow(1);
-    hdr.values    = masterCols.map(c => c.label);
-    headerStyle(hdr, hdrHex, masterCols.length);
+
+    // For company sheets: Filled checkbox (A) + Filled Date (B) + Filled By (C) before the formula data
+    const inputColDefs = options.isCompanySheet
+      ? [
+          { label: 'Filled',      key: 'FilledCheck', width: 10 },
+          { label: 'Filled Date', key: 'FilledDate',  width: 16 },
+          { label: 'Filled By',   key: 'FilledBy',    width: 18 },
+        ]
+      : [];
+
+    // Company sheets strip Company AND Important from formula output (implied by sheet name/context)
+    // Important and Filled sheets widen Company col; other sheets use masterCols as-is
+    const displayCols = options.isCompanySheet
+      ? masterCols.slice(2)
+      : (name === 'Important' || name === 'Filled')
+        ? masterCols.map(function(c) { return c.key === 'Company' ? Object.assign({}, c, { width: 32 }) : c; })
+        : masterCols;
+    const displayColCount = displayCols.length;
+
+    const allSheetCols  = [...inputColDefs, ...displayCols];
+    const totalColCount = allSheetCols.length;
+    const totalLastCol  = colNumToLetter(totalColCount);
+
+    const inputOffset = inputColDefs.length;  // 0 or 3
+
+    ws.columns = allSheetCols.map(c => ({ header: c.label, key: c.key, width: c.width }));
+    const hdr  = ws.getRow(1);
+    hdr.values = allSheetCols.map(c => c.label);
+    headerStyle(hdr, hdrHex, totalColCount);
+
+    // Column letters inside All Sections (for formula references)
+    const sColLetter = colNumToLetter(masterCols.findIndex(c => c.key === 'Section') + 1);
+    const bColLetter = colNumToLetter(masterCols.findIndex(c => c.key === 'Tender Brief') + 1);
 
     const src       = `'All Sections'!A2:${lastCol}${maxRow}`;
-    const critRange = `'All Sections'!${filterCol}2:${filterCol}${maxRow}`;
-    ws.getCell('A2').value = {
-      formula: `IFERROR(FILTER(${src},ISNUMBER(SEARCH("${filterValue}",${critRange}))),IF(ROWS(A2:A2)=1,"No tenders assigned to ${name}",""))`,
-    };
+    const critRange = `'All Sections'!$${filterCol}$2:$${filterCol}$${maxRow}`;
 
-    // Row highlighting — ISNUMBER(SEARCH) matches partial/multi-value Status cells
+    // CHOOSECOLS {3,4,...,N} strips Company (1) and Important (2) for company sheets
+    const colSeq = options.isCompanySheet
+      ? '{' + Array.from({ length: masterCols.length - 2 }, (_, i) => i + 3).join(',') + '}'
+      : null;
+    // Fallback empty row — width must match the formula output column count
+    const emptyRow = '{' + Array(displayColCount).fill('""').join(',') + '}';
+
+    // ── Build formula
+    let filterFormula;
+    if (name === 'Corrigendum') {
+      const sectionRange = `'All Sections'!$${sColLetter}$2:$${sColLetter}$${maxRow}`;
+      const briefRange   = `'All Sections'!$${bColLetter}$2:$${bColLetter}$${maxRow}`;
+      filterFormula = `IFERROR(FILTER(${src},(ISNUMBER(SEARCH("corrigendum",${sectionRange})))+(ISNUMBER(SEARCH("corrigendum",${briefRange})))>0),IF(ROWS(A2:A2)=1,"No Corrigendum tenders found",""))`;
+    } else if (name === 'Important') {
+      // Filter rows where Important checkbox = TRUE
+      filterFormula = `IFERROR(FILTER(${src},${critRange}=TRUE),IF(ROWS(A2:A2)=1,"No important tenders",""))`;
+    } else if (options.isCompanySheet) {
+      // CHOOSECOLS strips Company column; formula is placed at C2 (after the two input cols)
+      const cond = `ISNUMBER(SEARCH("${filterValue}",${critRange}))`;
+      filterFormula = `IFERROR(CHOOSECOLS(FILTER(${src},${cond}),${colSeq}),${emptyRow})`;
+    } else {
+      filterFormula = `IFERROR(FILTER(${src},ISNUMBER(SEARCH("${filterValue}",${critRange}))),IF(ROWS(A2:A2)=1,"No tenders assigned to ${name}",""))`;
+    }
+
+    // Place formula: C2 for company sheets (cols A-B are the editable input cols), A2 otherwise
+    const formulaCell = inputOffset > 0 ? colNumToLetter(inputOffset + 1) + '2' : 'A2';
+    ws.getCell(formulaCell).value = { formula: filterFormula };
+
+    // Do NOT set fixed row heights — Google Sheets auto-sizes rows based on FILTER formula content
+
+    // Zebra stripe
     ws.addConditionalFormatting({
-      ref: `A2:${lastCol}${maxRow}`,
+      ref: `A2:${totalLastCol}${maxRow}`,
       rules: [
-        { type: 'expression', formulae: ['ISNUMBER(SEARCH("Important",$B2))'], priority: 100,
-          style: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF59D' } } } },
-        { type: 'expression', formulae: ['ISNUMBER(SEARCH("Filled",$B2))'],    priority: 101,
-          style: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFA5D6A7' } } } },
+        { type: 'expression', formulae: ['MOD(ROW(),2)=0'], priority: 200,
+          style: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEAF4FB' } } } },
       ],
     });
-    ws.protect('', sheetProtectOpts);
+
+    // Row highlighting:
+    // • Company sheets: green when Filled checkbox (col A) = TRUE
+    // • All other sheets: yellow when Important checkbox = TRUE (col B in masterCols display)
+    if (options.isCompanySheet) {
+      ws.addConditionalFormatting({
+        ref: `A2:${totalLastCol}${maxRow}`,
+        rules: [
+          { type: 'expression', formulae: ['$A2=TRUE'], priority: 100,
+            style: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFA5D6A7' } } } },
+        ],
+      });
+    } else {
+      const impIdx = displayCols.findIndex(function(c) { return c.key === 'Important'; });
+      if (impIdx >= 0) {
+        const impCF = colNumToLetter(impIdx + 1 + inputOffset);
+        ws.addConditionalFormatting({
+          ref: `A2:${totalLastCol}${maxRow}`,
+          rules: [
+            { type: 'expression', formulae: [`$${impCF}2=TRUE`], priority: 101,
+              style: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF59D' } } } },
+          ],
+        });
+      }
+    }
+
+    // AutoFilter across all display columns (input cols A-B + formula cols C+)
+    ws.autoFilter = {
+      from: { row: 1, column: 1 },
+      to:   { row: 1, column: totalColCount },
+    };
+
+    // Protection: Apps Script applies range-based protection after Google Sheets upload.
+    // No ws.protect() here — XLSX sheet-level protection conflicts with the Apps Script's
+    // finer-grained range protection and blocks AutoFilter for non-owner users.
+
     return ws;
   }
 
-  // ── Sheet order: All Sections → Important → Filled → Corrigendum → Gravity → TT → QM → sections
-  makeFilterSheet('Important',  'FFB71C1C', 'B71C1C', 'B', 'Important');
-  makeFilterSheet('Filled',     'FF00695C', '00695C', 'B', 'Filled');
+  // ── Sheet order: All Sections → Gravity → TT → Quickman → Important → Filled → Corrigendum → sections
+  // Company sheets come right after All Sections so they're the first thing users see
+  const masterColor = '2C3E50';
+  const masterArgb  = 'FF2C3E50';
 
-  const corrigendumRows = allRows.filter(r =>
-    Object.values(r).some(v => typeof v === 'string' && v.toLowerCase().includes('corrigendum'))
-  );
-  if (corrigendumRows.length) {
-    const corrWs = wb.addWorksheet('Corrigendum');
-    fillDataSheet(corrWs, masterCols, corrigendumRows, 'FFFF6F00', 'E65100');
-    corrWs.protect('', sheetProtectOpts);
-  }
+  // Company sheets — fully unlocked; Filled Date / Filled By entered here
+  makeFilterSheet('Gravity',    masterArgb, masterColor, 'A', 'Gravity',    { isCompanySheet: true });
+  makeFilterSheet('Total Tech', masterArgb, masterColor, 'A', 'Total Tech', { isCompanySheet: true });
+  makeFilterSheet('Quickman',   masterArgb, masterColor, 'A', 'Quickman',   { isCompanySheet: true });
 
-  makeFilterSheet('Gravity',    'FF1B5E20', '1B5E20', 'A', 'Gravity');
-  makeFilterSheet('Total Tech', 'FF1565C0', '1565C0', 'A', 'Total Tech');
-  makeFilterSheet('Quickman',   'FF4A148C', '4A148C', 'A', 'Quickman');
+  // Important: filterCol = Important column (B in All Sections), formula uses =TRUE (checkbox)
+  makeFilterSheet('Important', 'FFB71C1C', masterColor, colNumToLetter(masterCols.findIndex(function(c) { return c.key === 'Important'; }) + 1), 'Yes');
 
-  // Per-section sheets — fully locked (all edits happen in All Sections)
+  // Filled sheet — references each company sheet's Filled checkbox (col A) directly
+  (function() {
+    const filledWs = wb.addWorksheet(uniqueName('Filled'));
+    filledWs.properties = { tabColor: { argb: 'FF00695C' } };
+    filledWs.views = [{ state: 'frozen', ySplit: 1, showGridLines: true }];
+
+    // Company sheet layout: A=Filled, B=FilledDate, C=FilledBy, D..=FILTER output (masterCols.slice(2))
+    const coDisplayCols  = masterCols.slice(2);          // Section, TDR, ...
+    const coLastCol      = colNumToLetter(3 + coDisplayCols.length); // D + displayColCount - 1
+
+    // Filled sheet columns: Company | FilledDate | FilledBy | Section | TDR | ...
+    const filledSheetCols = [
+      { key: 'Company',    label: 'Company',     width: 32 },
+      { key: 'FilledDate', label: 'Filled Date', width: 16 },
+      { key: 'FilledBy',   label: 'Filled By',   width: 18 },
+    ].concat(coDisplayCols);
+    const filledTotal   = filledSheetCols.length;
+    const filledLastCol = colNumToLetter(filledTotal);
+
+    filledWs.columns = filledSheetCols.map(function(c) { return { header: c.label, key: c.key, width: c.width }; });
+    const filledHdr = filledWs.getRow(1);
+    filledHdr.values = filledSheetCols.map(function(c) { return c.label; });
+    headerStyle(filledHdr, masterColor, filledTotal);
+
+    // VSTACK: for each company, filter rows where col A = TRUE, prefix with company name
+    const companies = ['Gravity', 'Total Tech', 'Quickman'];
+    const filledEmpty = '{' + Array(filledTotal).fill('""').join(',') + '}';
+    const fParts = companies.map(function(co) {
+      const sq = co.indexOf(' ') >= 0 ? ("'" + co + "'") : co;
+      return 'IFERROR(FILTER(HSTACK({"' + co + '"},' + sq + '!B2:' + coLastCol + maxRow + '),' + sq + '!A2:A' + maxRow + '=TRUE),' + filledEmpty + ')';
+    });
+    filledWs.getCell('A2').value = { formula: 'IFERROR(VSTACK(' + fParts.join(',') + '),IF(ROWS(A2:A2)=1,"No filled tenders",""))' };
+
+    filledWs.addConditionalFormatting({
+      ref: 'A2:' + filledLastCol + maxRow,
+      rules: [
+        { type: 'expression', formulae: ['MOD(ROW(),2)=0'], priority: 200,
+          style: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEAF4FB' } } } },
+        { type: 'expression', formulae: ['$A2<>""'], priority: 100,
+          style: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFA5D6A7' } } } },
+      ],
+    });
+    filledWs.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: filledTotal } };
+  }());
+  makeFilterSheet('Corrigendum', 'FFFF6F00', masterColor, sectionColLetter, 'corrigendum');
+
   sections.forEach((sec, idx) => {
-    const tabArgb   = TAB_COLORS[idx % TAB_COLORS.length];
-    const headerHex = tabArgb.slice(2);
-    const ws        = wb.addWorksheet(uniqueName(sectionBaseName(sec.section)));
-    fillDataSheet(ws, finalCols, sec.tenders, tabArgb, headerHex);
-    ws.protect('', sheetProtectOpts);
+    const name = sectionBaseName(sec.section);
+    makeFilterSheet(name, masterArgb, masterColor, sectionColLetter, name);
   });
 
   return wb.xlsx.writeBuffer();
@@ -615,11 +742,9 @@ async function scrapeTenderDetail(viewLink) {
 
     let tenderValue = normalizeAmount(record['Tender Value']);
 
-
-
     return {
       'Company': '',
-      'Status': '',
+      'Important': false,
       'Filled Date': '',
       'Filled By': '',
       'Bid Status': '',
@@ -645,7 +770,7 @@ async function scrapeTenderDetail(viewLink) {
     };
   } catch (e) {
     return {
-      'Company': '', 'Status': '', 'Filled Date': '', 'Filled By': '', 'Bid Status': '',
+      'Company': '', 'Important': false, 'Filled Date': '', 'Filled By': '', 'Bid Status': '',
       'TDR': 'N/A', 'Tender No': 'N/A', 'Tendering Authority': 'N/A',
       'Tender Brief': `Error: ${e.message}`, 'City': 'N/A', 'State': 'N/A',
       'Document Fees': 'N/A', 'EMD': 'N/A', 'Tender Value': 'N/A',
@@ -699,6 +824,11 @@ app.get('/scrape-deep', async (req, res) => {
     const { data } = await axios.get(url.split('#')[0], { headers: HEADERS, timeout: 20000, maxRedirects: 5 });
     const $ = cheerio.load(data);
     const pageTitle = clean($('title').text()) || 'Tenders';
+    
+    // Try to extract date from title (e.g., "15-05-2026")
+    const dateMatch = pageTitle.match(/\d{1,2}[-\/]\d{1,2}[-\/]\d{2,4}/);
+    const tenderDate = dateMatch ? dateMatch[0].replace(/\//g, '-') : new Date().toLocaleDateString('en-GB').replace(/\//g, '-');
+
     $('script, style').remove();
 
     const sections = parseDailyDigest($);
@@ -739,14 +869,14 @@ app.get('/scrape-deep', async (req, res) => {
     const excelBuf = await buildExcel(enriched);
 
     const token    = crypto.randomBytes(16).toString('hex');
-    const safeName = pageTitle.replace(/[^a-z0-9]/gi, '_').slice(0, 40) || 'tender_data';
+    const safeName = tenderDate; // Use the date as the filename
     const filePath = path.join(TMP_DIR, `${token}.xlsx`);
     fs.writeFileSync(filePath, excelBuf);
     setTimeout(() => { try { fs.unlinkSync(filePath); } catch (_) {} }, 30 * 60 * 1000);
 
     // Upload to Google Sheets in parallel with returning the done event
     sseWrite(res, 'status', { phase: 3, message: 'Uploading to Google Sheets…' });
-    const sheetsUrl = await uploadToGoogleSheets(excelBuf, pageTitle);
+    const sheetsUrl = await uploadToGoogleSheets(excelBuf, safeName);
 
     sseWrite(res, 'done', { token, filename: safeName, totalTenders: total, sections: sections.length, pageTitle, sheetsUrl });
   } catch (err) {
