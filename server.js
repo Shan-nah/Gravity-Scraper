@@ -436,10 +436,10 @@ async function buildExcel(sections) {
 
   const allRows = sections.flatMap(s => s.tenders.map(t => ({ Section: s.section, ...t })));
 
-  // Sort gems.gov tenders first across all sections (stable — preserves original order within each group)
+  // Sort GeM tenders first across all sections (stable — preserves original order within each group)
   allRows.sort((a, b) => {
-    const aG = /gems/i.test(String(a['Information Source'] || '')) ? 0 : 1;
-    const bG = /gems/i.test(String(b['Information Source'] || '')) ? 0 : 1;
+    const aG = /gem/i.test(String(a['Information Source'] || '')) ? 0 : 1;
+    const bG = /gem/i.test(String(b['Information Source'] || '')) ? 0 : 1;
     return aG - bG;
   });
 
