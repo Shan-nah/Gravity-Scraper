@@ -338,7 +338,7 @@ function fillDataSheet(ws, cols, rows, tabArgb, headerColor) {
       const cell = row.getCell(linkIdx + 1);
       const href = r['View Link'];
       if (href && href.startsWith('http')) {
-        cell.value = { formula: `=HYPERLINK("${href}","View Tender")` };
+        cell.value = { formula: `HYPERLINK("${href}","View Tender")`, result: 'View Tender' };
         cell.font = { name: 'Calibri', size: 10, color: { argb: 'FF1565C0' }, underline: true };
       }
     }
