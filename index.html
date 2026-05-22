@@ -286,6 +286,10 @@
     <input id="urlInput" type="url"
       placeholder="https://www.tenderdetail.com/dailytenders/…"
       autocomplete="off" spellcheck="false"/>
+    <label class="input-label" for="geminiKeyInput" style="margin-top:14px;font-size:12px;opacity:.7;">🤖 Gemini API Key <span style="font-weight:400;opacity:.7;">(optional — enables EMD Exemption extraction)</span></label>
+    <input id="geminiKeyInput" type="password"
+      placeholder="AIza… (leave blank if set in server .env)"
+      autocomplete="off" spellcheck="false" style="font-size:13px;letter-spacing:.04em;"/>
     <button class="btn btn-primary" id="scrapeBtn" onclick="startScrape()">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
         <circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/>
@@ -310,6 +314,19 @@
     <div class="progress-track"><div class="progress-fill" id="progressFill"></div></div>
     <div class="progress-sub" id="progressSub">Starting…</div>
     <div class="section-pills" id="sectionPills"></div>
+
+    <!-- Google Sheets upload row — shown during phase 4 -->
+    <div id="sheetsUploadRow" style="display:none;margin-top:18px;padding-top:14px;border-top:1px solid rgba(99,102,241,.15)">
+      <div class="prog-header" style="margin-bottom:8px">
+        <div class="prog-title" style="font-size:13px">
+          <div class="prog-pulse"></div>
+          Uploading to Google Sheets…
+        </div>
+        <span class="pct-badge" id="sheetsPctBadge">0%</span>
+      </div>
+      <div class="progress-track"><div class="progress-fill" id="sheetsFill" style="background:linear-gradient(90deg,#1a73e8,#34a853)"></div></div>
+      <div class="progress-sub" id="sheetsSub" style="font-size:11px">Sending workbook to Google Drive…</div>
+    </div>
   </div>
 
   <!-- Download -->
@@ -393,7 +410,9 @@
     document.getElementById('sectionPills').innerHTML = '';
     showStatus('Connecting to server…', 'info', true);
 
-    const sse = new EventSource('/scrape-deep?url=' + encodeURIComponent(url));
+    const geminiKey = document.getElementById('geminiKeyInput').value.trim();
+    const sseUrl = '/scrape-deep?url=' + encodeURIComponent(url) + (geminiKey ? '&geminiKey=' + encodeURIComponent(geminiKey) : '');
+    const sse = new EventSource(sseUrl);
     currentSSE = sse;
 
     sse.addEventListener('status', function(e) {
@@ -405,9 +424,22 @@
         (d.sections || []).forEach(function(s) { setPill(s.section, 'pending'); });
       } else if (d.phase === 3) {
         setProgress(d.total, d.total, 'Building Excel workbook…');
+      } else if (d.phase === 4) {
+        setProgress(d.total || 0, d.total || 0, 'Excel ready — uploading to Google Sheets…');
+        document.getElementById('sheetsUploadRow').style.display = 'block';
+        document.getElementById('sheetsFill').style.width = '0%';
+        document.getElementById('sheetsPctBadge').textContent = '0%';
       } else {
         showStatus(d.message, 'info', true);
       }
+    });
+
+    sse.addEventListener('sheets_progress', function(e) {
+      var d = JSON.parse(e.data);
+      var pct = d.pct || 0;
+      document.getElementById('sheetsFill').style.width = pct + '%';
+      document.getElementById('sheetsPctBadge').textContent = pct + '%';
+      if (pct >= 100) document.getElementById('sheetsSub').textContent = 'Done!';
     });
 
     sse.addEventListener('section_start', function(e) {

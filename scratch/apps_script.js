@@ -57,19 +57,19 @@ function doPost(e) {
     Drive.Permissions.create({ role: 'writer', type: 'anyone' }, fileId);
 
     // 3 ── Fetch all sheet metadata
-    var ss     = Sheets.Spreadsheets.get(fileId);
+    var ss = Sheets.Spreadsheets.get(fileId);
     var sheets = ss.sheets;
-    var owner  = Session.getEffectiveUser().getEmail();
+    var owner = Session.getEffectiveUser().getEmail();
 
     var requests = [];
 
     for (var i = 0; i < sheets.length; i++) {
-      var sheet   = sheets[i];
-      var title   = sheet.properties.title;
+      var sheet = sheets[i];
+      var title = sheet.properties.title;
       var sheetId = sheet.properties.sheetId;
-      var grid    = sheet.properties.gridProperties || {};
-      var rows    = grid.rowCount    || 1000;
-      var cols    = grid.columnCount || 30;
+      var grid = sheet.properties.gridProperties || {};
+      var rows = grid.rowCount || 1000;
+      var cols = grid.columnCount || 30;
 
       // ── STEP A  Remove any protection that was imported from the XLSX ────────
       // Google Sheets may import XLSX sheet-level protection. We remove it so our
@@ -91,11 +91,11 @@ function doPost(e) {
           addProtectedRange: {
             protectedRange: {
               range: {
-                sheetId:          sheetId,
-                startRowIndex:    1,      // skip header row
-                endRowIndex:      rows,
+                sheetId: sheetId,
+                startRowIndex: 1,      // skip header row
+                endRowIndex: rows,
                 startColumnIndex: 2,      // col C onwards
-                endColumnIndex:   cols
+                endColumnIndex: cols
               },
               description: 'Scraped data — read-only. Only Company (A) and Important (B) are editable.',
               editors: { users: [owner] }
@@ -109,11 +109,11 @@ function doPost(e) {
           addProtectedRange: {
             protectedRange: {
               range: {
-                sheetId:          sheetId,
-                startRowIndex:    1,
-                endRowIndex:      rows,
+                sheetId: sheetId,
+                startRowIndex: 1,
+                endRowIndex: rows,
                 startColumnIndex: 3,      // col D onwards (formula data starts here)
-                endColumnIndex:   cols
+                endColumnIndex: cols
               },
               description: 'Formula-driven data — read-only. Filled (A), Filled Date (B) and Filled By (C) are editable.',
               editors: { users: [owner] }
@@ -125,14 +125,14 @@ function doPost(e) {
         requests.push({
           setDataValidation: {
             range: {
-              sheetId:          sheetId,
-              startRowIndex:    1,
-              endRowIndex:      rows,
+              sheetId: sheetId,
+              startRowIndex: 1,
+              endRowIndex: rows,
               startColumnIndex: 0,    // col A
-              endColumnIndex:   1
+              endColumnIndex: 1
             },
             rule: {
-              condition:    { type: 'BOOLEAN' },
+              condition: { type: 'BOOLEAN' },
               showCustomUi: true
             }
           }
@@ -145,11 +145,11 @@ function doPost(e) {
           addProtectedRange: {
             protectedRange: {
               range: {
-                sheetId:          sheetId,
-                startRowIndex:    1,      // row 2 onwards
-                endRowIndex:      rows,
+                sheetId: sheetId,
+                startRowIndex: 1,      // row 2 onwards
+                endRowIndex: rows,
                 startColumnIndex: 0,
-                endColumnIndex:   cols
+                endColumnIndex: cols
               },
               description: 'Scraped data — read-only. Use the filter arrows in the header to filter.',
               editors: { users: [owner] }
@@ -166,16 +166,16 @@ function doPost(e) {
           requests.push({
             setDataValidation: {
               range: {
-                sheetId:          sheetId,
-                startRowIndex:    1,      // skip header
-                endRowIndex:      rows,
+                sheetId: sheetId,
+                startRowIndex: 1,      // skip header
+                endRowIndex: rows,
                 startColumnIndex: chip.col,
-                endColumnIndex:   chip.col + 1
+                endColumnIndex: chip.col + 1
               },
               rule: {
                 condition: {
                   type: 'ONE_OF_LIST',
-                  values: chip.values.map(function(v) { return { userEnteredValue: v }; })
+                  values: chip.values.map(function (v) { return { userEnteredValue: v }; })
                 },
                 showCustomUi: true,   // ← chip pill + multi-select checkbox panel
                 strict: false         // ← allow typed comma-separated values too
@@ -188,14 +188,14 @@ function doPost(e) {
         requests.push({
           setDataValidation: {
             range: {
-              sheetId:          sheetId,
-              startRowIndex:    1,
-              endRowIndex:      rows,
+              sheetId: sheetId,
+              startRowIndex: 1,
+              endRowIndex: rows,
               startColumnIndex: 1,    // col B
-              endColumnIndex:   2
+              endColumnIndex: 2
             },
             rule: {
-              condition:    { type: 'BOOLEAN' },
+              condition: { type: 'BOOLEAN' },
               showCustomUi: true
             }
           }
@@ -217,7 +217,7 @@ function doPost(e) {
   } catch (err) {
     return ContentService
       .createTextOutput(JSON.stringify({
-        error:   err.toString(),
+        error: err.toString(),
         details: 'Ensure Google Sheets API and Drive API are enabled under Services → Add a service.'
       }))
       .setMimeType(ContentService.MimeType.JSON);

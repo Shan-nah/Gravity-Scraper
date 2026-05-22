@@ -15,6 +15,323 @@ const PORT = process.env.PORT || 8080;
 process.on('uncaughtException',  err => console.error('Uncaught Exception:', err));
 process.on('unhandledRejection', err => console.error('Unhandled Rejection:', err));
 
+// ── Gemini API setup (optional — enables EMD Exemption extraction)
+//    Set GEMINI_API_KEY in .env or add keys to keys.txt (one per line)
+let geminiApiKeys = [];
+(function initGemini() {
+  const envKey = process.env.GEMINI_API_KEY;
+  if (envKey) {
+    geminiApiKeys = envKey.split(',').map(k => k.trim()).filter(Boolean);
+    console.log(`✓  Gemini API enabled (${geminiApiKeys.length} key(s)) — EMD Exemption will be extracted\n`);
+    return;
+  }
+  const keyFile = path.join(__dirname, 'keys.txt');
+  if (fs.existsSync(keyFile)) {
+    const lines = fs.readFileSync(keyFile, 'utf8').split('\n').map(l => l.trim()).filter(Boolean);
+    if (lines.length > 0) {
+      geminiApiKeys = lines;
+      console.log(`✓  Gemini API enabled via keys.txt (${geminiApiKeys.length} key(s)) — EMD Exemption will be extracted\n`);
+    }
+  }
+})();
+
+
+const GEMINI_MODELS = [
+  'gemini-2.5-flash',
+  'gemini-2.5-flash-lite',
+  'gemini-3.1-flash-lite',
+  'gemma-4-26b-a4b-it',
+  'gemma-4-31b-it',
+];
+
+
+// Strip chain-of-thought reasoning that verbose models (Gemma, etc.) prepend to their answers.
+// The actual answer is always the last clean non-markdown line.
+function cleanGeminiOutput(text) {
+  if (!text) return text;
+
+  // Detect reasoning markers used by verbose models
+  const hasReasoning = /\*\s+(?:Task|Constraint|Source|Searching|Found|Check|Draft|Require):/i.test(text) ||
+                       /^\s*\|\s/m.test(text) && text.includes('Task:');
+  if (hasReasoning) {
+    const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i];
+      if (/^[\*\-\|#]/.test(line) || line.length < 15) continue;
+      // Deduplicate if model repeated the answer twice on one line
+      const mid = Math.ceil(line.length / 2);
+      const a = line.slice(0, mid).trim().toLowerCase();
+      const b = line.slice(line.length - mid).trim().toLowerCase();
+      return (a === b ? line.slice(0, mid) : line).trim();
+    }
+  }
+
+  // Deduplicate answer-doubled-without-newline (also common in reasoning models)
+  const t = text.trim();
+  const mid = Math.ceil(t.length / 2);
+  const a = t.slice(0, mid).trim().toLowerCase().replace(/\s+/g, ' ');
+  const b = t.slice(t.length - mid).trim().toLowerCase().replace(/\s+/g, ' ');
+  if (a.length > 20 && a === b) return t.slice(0, mid).trim();
+
+  return t;
+}
+
+// In-memory cache: identical snippets (e.g. repeated GeM clause) → instant result, no API call
+const _geminiCache    = new Map();
+// Per-key quota tracker: skip calls when all keys were recently 429'd
+const _keyLastQuota   = new Map();
+
+async function callGemini(text, prompt, extraKey) {
+  const keys = [...new Set([extraKey, ...geminiApiKeys].filter(Boolean))];
+  if (!keys.length) return null;
+
+  // Cache check — first 500 chars uniquely identify repeated clauses (GeM standard text, etc.)
+  const cacheKey = text.slice(0, 500);
+  if (_geminiCache.has(cacheKey)) {
+    console.log('  Gemini cache hit');
+    return _geminiCache.get(cacheKey);
+  }
+
+  // Quota guard — if ALL keys were 429'd in the last 60s, skip immediately
+  const allExhausted = keys.every(k => {
+    const t = _keyLastQuota.get(k);
+    return t && Date.now() - t < 60000;
+  });
+  if (allExhausted) {
+    console.warn('  All Gemini keys recently quota-limited, skipping');
+    return null;
+  }
+
+  const { GoogleGenerativeAI } = require('@google/generative-ai');
+
+  for (const modelName of GEMINI_MODELS) {
+    for (const key of keys) {
+      try {
+        const genAI = new GoogleGenerativeAI(key);
+        const model = genAI.getGenerativeModel({ model: modelName });
+
+        // Disable thinking mode (thinkingBudget:0 cuts response time from 30–120s → 1–3s)
+        const callPromise = model.generateContent({
+          contents: [{ role: 'user', parts: [{ text: prompt + '\n\n' + text }] }],
+          generationConfig: { thinkingConfig: { thinkingBudget: 0 } },
+        });
+        // 10s safety timeout — if model hangs, try next key/model immediately
+        const result = await Promise.race([
+          callPromise,
+          new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 10000)),
+        ]);
+
+        const out = cleanGeminiOutput(result.response.text());
+        if (out) {
+          _geminiCache.set(cacheKey, out); // cache for subsequent identical snippets
+          return out;
+        }
+      } catch (e) {
+        const msg = e.message || '';
+        if (/429|quota|rate.?limit|resource.?exhaust/i.test(msg)) {
+          _keyLastQuota.set(key, Date.now());
+          console.warn(`  Key …${key.slice(-4)} rate-limited on ${modelName}, trying next key`);
+        } else {
+          console.warn(`  Gemini ${modelName} failed: ${msg.slice(0, 80)}`);
+          break; // non-quota error: skip to next model
+        }
+      }
+    }
+  }
+  return null;
+}
+
+async function fetchDocText(url) {
+  try {
+    const resp = await axios.get(url, {
+      headers: { ...HEADERS, Accept: 'application/pdf,*/*' },
+      responseType: 'arraybuffer',
+      timeout: 12000,
+      maxContentLength: 10 * 1024 * 1024,
+    });
+    const ct = (resp.headers['content-type'] || '').toLowerCase();
+    const buf = Buffer.from(resp.data);
+
+    if (ct.includes('pdf') || /\.pdf/i.test(url)) {
+      const tmpPath = path.join(TMP_DIR, `pdf_${Date.now()}_${crypto.randomBytes(4).toString('hex')}.pdf`);
+      await fs.promises.writeFile(tmpPath, buf);
+      try {
+        if (PDFTOTEXT) {
+          // Fast path: native binary, 5–40× faster than JS parsing
+          const { execFile } = require('child_process');
+          const { promisify } = require('util');
+          const { stdout } = await promisify(execFile)(
+            PDFTOTEXT,
+            ['-q', '-enc', 'UTF-8', '-f', '1', '-l', '15', tmpPath, '-'],
+            { maxBuffer: 50 * 1024 * 1024, timeout: 15000 }
+          );
+          return stdout.replace(/\s+/g, ' ').trim();
+        }
+        // Fallback: PDFParse capped at 30 pages
+        const { PDFParse } = require('pdf-parse');
+        const parser = new PDFParse({ url: `file://${tmpPath}` });
+        const result = await parser.getText({ first: 30 });
+        return (result.text || '').replace(/\s+/g, ' ').trim();
+      } finally {
+        fs.unlink(tmpPath, () => {});
+      }
+    }
+    return buf.toString('utf8').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  } catch (e) {
+    return '';
+  }
+}
+
+// Scan extracted PDF text for EMD exemption-related passages.
+// Returns a short snippet (≤3000 chars) of the relevant text, or null if none found.
+function extractEmdSnippet(text) {
+  if (!text) return null;
+  const HALF_WIN = 500;
+  const lower = text.toLowerCase();
+  const positions = [];
+
+  // Strong patterns: directly mention exemption + EMD only
+  const strongPats = [
+    /emd\s*exemption/g,
+    /exemption\s+(?:from|of)\s+(?:emd|earnest)/g,
+    /exempt(?:ed|ion)?\s+from\s+(?:paying\s+)?(?:emd|earnest)/g,
+    /emd\s+(?:is\s+)?(?:not\s+required|waived|nil|exempted|exempt)/g,
+    /no\s+emd\s+(?:is\s+)?(?:required|applicable)/g,
+    /waiver\s+of\s+(?:emd|earnest)/g,
+    /emd\s*[:\-]\s*nil/g,
+    /nil\s+emd\b/g,
+    /earnest\s+money\s+deposit\s+(?:is\s+)?(?:not\s+applicable|waived|nil|exempt)/g,
+    // "EMD required: No" / "EMD Detail → Required: No" — EMD not required at all
+    // The text after pdftotext looks like "EMD Detail ... Required No" with Hindi chars between
+    /emd\s+required\s*[:\-]?\s*no\b/g,
+    /required\s*[:\-]\s*no\b[^.]*emd/g,
+    /emd[^.]{0,120}required[^.]{0,30}no\b/g,   // "EMD Detail ... Required No" broader match
+    /required[^.]{0,30}no\b[^.]{0,120}emd/g,   // "Required No ... EMD" reverse order
+    // "registered under MSME/NSIC → EMD exemption certificate"
+    /emd\s+exemption\s+certificate/g,
+    /registered\s+under\s+(?:msme|nsic|msmed)[^.]*emd/g,
+    /(?:msme|nsic|msmed)\s+registered[^.]*emd/g,
+  ];
+  for (const pat of strongPats) {
+    let m;
+    while ((m = pat.exec(lower)) !== null) positions.push(m.index);
+  }
+
+  // Contextual: category keywords near an EMD mention (within 300 chars)
+  const emdPos = [];
+  const emdPat = /(?:emd|earnest\s+money)/g;
+  let em;
+  while ((em = emdPat.exec(lower)) !== null) emdPos.push(em.index);
+
+  const catPat = /(?:msme|micro\s+(?:and\s+small|enterprise)|mse\b|sc\/st|scheduled\s+(?:caste|tribe)|startup|dpiit|nsic|udyam)/g;
+  let cm;
+  while ((cm = catPat.exec(lower)) !== null) {
+    for (const ep of emdPos) {
+      if (Math.abs(cm.index - ep) <= 300) { positions.push(Math.min(cm.index, ep)); break; }
+    }
+  }
+
+  if (positions.length === 0) return null;
+
+  // Build ±HALF_WIN windows, sort, merge overlapping ones
+  const ranges = positions
+    .map(p => [Math.max(0, p - HALF_WIN), Math.min(text.length, p + HALF_WIN)])
+    .sort((a, b) => a[0] - b[0]);
+
+  const merged = [ranges[0]];
+  for (let i = 1; i < ranges.length; i++) {
+    const last = merged[merged.length - 1];
+    if (ranges[i][0] <= last[1] + 100) { last[1] = Math.max(last[1], ranges[i][1]); }
+    else merged.push(ranges[i]);
+  }
+
+  return merged.map(([s, e]) => text.slice(s, e).trim()).join('\n---\n').slice(0, 3000);
+}
+
+// Returns only the NIT document link (UUID match from tender URL) — or falls back to all links.
+function pickTargetDocLinks(viewLink, docLinks) {
+  const uuidMatch = viewLink.match(
+    /TenderNotice\/\d+\/([A-F0-9]{8}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{12})/i
+  );
+  if (uuidMatch) {
+    const uuid = uuidMatch[1].toLowerCase();
+    const matched = docLinks.filter(l => l.toLowerCase().includes(uuid));
+    if (matched.length > 0) return matched; // UUID found → only this doc
+  }
+  return docLinks.slice(0, 3); // fallback: up to 3 docs
+}
+
+// True when the scraped value is a placeholder meaning "look in the document".
+function needsDocLookup(val) {
+  if (!val || val === 'N/A' || typeof val === 'number') return false;
+  return /refer\s*doc|as\s*per\s*doc|as\s*per\s*boq|as\s*per\s*nit|per\s*nit|see\s*doc|tbd|as\s*per\s*schedule|as\s*per\s*estimate|as\s*per\s*tender|as\s*per\s*drawing/i.test(String(val));
+}
+
+// Pure-regex extraction of EMD amount and Tender Value from pre-fetched document texts.
+function extractAmountsFromTexts(texts) {
+  const result = { emd: null, tv: null };
+  const emdPats = [
+    /emd\s+(?:amount|value)\s*[:\|=]\s*(?:rs\.?|inr|₹)?\s*([0-9,\.]+(?:\s*(?:crore[s]?|cr|lac[s]?|lakh[s]?|thousand|k))?)/i,
+    /earnest\s+money\s+(?:deposit\s+)?(?:amount\s*)?[:\|=]\s*(?:rs\.?|inr|₹)?\s*([0-9,\.]+(?:\s*(?:crore[s]?|cr|lac[s]?|lakh[s]?|thousand|k))?)/i,
+  ];
+  const tvPats = [
+    /estimated\s*(?:bid\s*)?(?:value|cost|amount)\s*[:\|=]\s*(?:rs\.?|inr|₹)?\s*([0-9,\.]+(?:\s*(?:crore[s]?|cr|lac[s]?|lakh[s]?|thousand|k))?)/i,
+    /tender\s*value\s*[:\|=]\s*(?:rs\.?|inr|₹)?\s*([0-9,\.]+(?:\s*(?:crore[s]?|cr|lac[s]?|lakh[s]?|thousand|k))?)/i,
+    /(?:amount\s*put\s*to\s*tender|contract\s*value|work\s*(?:value|amount|estimate)|nit\s*(?:value|amount))\s*[:\|=]\s*(?:rs\.?|inr|₹)?\s*([0-9,\.]+(?:\s*(?:crore[s]?|cr|lac[s]?|lakh[s]?|thousand|k))?)/i,
+    /bid\s*amount\s*[:\|=]\s*(?:rs\.?|inr|₹)?\s*([0-9,\.]+(?:\s*(?:crore[s]?|cr|lac[s]?|lakh[s]?|thousand|k))?)/i,
+  ];
+  for (const text of texts) {
+    if (!text) continue;
+    if (!result.emd) {
+      for (const p of emdPats) {
+        const m = text.match(p);
+        if (m?.[1]) { const n = normalizeAmount(m[1].trim()); if (typeof n === 'number') { result.emd = n; break; } }
+      }
+    }
+    if (!result.tv) {
+      for (const p of tvPats) {
+        const m = text.match(p);
+        if (m?.[1]) { const n = normalizeAmount(m[1].trim()); if (typeof n === 'number') { result.tv = n; break; } }
+      }
+    }
+    if (result.emd && result.tv) break;
+  }
+  return result;
+}
+
+// Takes pre-fetched document texts (not URLs) — call after fetching once in scrapeTenderDetail.
+async function extractEmdExemptionFromTexts(docTexts, apiKeyOverride) {
+  let snippet = null;
+  for (const text of docTexts) {
+    if (!text) continue;
+    snippet = extractEmdSnippet(text);
+    if (snippet) { console.log(`  EMD snippet found (${snippet.length} chars)`); break; }
+  }
+
+  if (!snippet) { console.log('  No EMD snippet in docs'); return 'No exemption mentioned'; }
+
+  if (!geminiApiKeys.length && !apiKeyOverride) return snippet.trim();
+
+  const prompt = `From this tender document excerpt, state exactly who is exempt from paying EMD (Earnest Money Deposit). Use the exact wording from the document. 1-2 sentences only. If no EMD exemption is mentioned, respond: No exemption mentioned
+
+Excerpt:`;
+
+  const result = await callGemini(snippet, prompt, apiKeyOverride);
+  if (result) return result;
+
+  // Direct "EMD not required" signal — no Gemini interpretation needed
+  if (/emd[^.]{0,120}required[^.]{0,30}no\b/i.test(snippet) ||
+      /required[^.]{0,30}no\b[^.]{0,120}emd/i.test(snippet)) {
+    return 'EMD not required';
+  }
+
+  const fallback =
+    snippet.match(/Under\s+(?:the\s+)?MSE\s+category[^.]+\.[^.]*Traders[^.]+\./i)?.[0] ||
+    snippet.match(/Under\s+(?:the\s+)?MSE\s+category[^.]+\./i)?.[0] ||
+    snippet.match(/EMD\s+EXEMPTION\s*:\s*(?:The\s+bidder[^.]+\.\s*)?([^/\n]{20,300})/i)?.[1];
+  return fallback ? fallback.trim() : 'N/A';
+}
+
 // ── Google Drive / Sheets upload (optional)
 //    Set GOOGLE_SERVICE_ACCOUNT_KEY in .env (JSON string or file path)
 //    Optionally set GOOGLE_SHEETS_SHARED_WITH=your@email.com for editor access
@@ -80,7 +397,7 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-app.get('/', (req, res) => {
+app.get('/', (_req, res) => {
   res.sendFile(path.join(__dirname, 'index.html'));
 });
 
@@ -88,25 +405,25 @@ const TMP_DIR = path.join(__dirname, 'tmp');
 if (!fs.existsSync(TMP_DIR)) fs.mkdirSync(TMP_DIR);
 cleanOldFiles();
 
+// Detect pdftotext (poppler) — 5–40× faster than JS-based PDF parsing
+let PDFTOTEXT = null;
+(function detectPdftotext() {
+  try {
+    const { execSync } = require('child_process');
+    const p = execSync('which pdftotext 2>/dev/null', { timeout: 2000 }).toString().trim();
+    if (p) { PDFTOTEXT = p; console.log(`✓  pdftotext found at ${p} — fast PDF extraction enabled\n`); }
+  } catch (_) {}
+})();
+
 const HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
   'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
   'Accept-Language': 'en-US,en;q=0.5',
 };
-const CONCURRENCY = 4; // reduced from 8 to save memory on heavy PDF processing
+const CONCURRENCY = Math.max(6, geminiApiKeys.length * 3);
 
 function clean(t) { return (t || '').replace(/\s+/g, ' ').trim(); }
 
-// Normalise multi-line strings that go into text-heavy cells:
-// trim trailing spaces per line, collapse 3+ blank lines → 1, trim ends.
-function cleanBidText(text) {
-  return text
-    .split('\n')
-    .map(l => l.trimEnd())
-    .join('\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-}
 
 // Convert EMD / Tender Value strings to plain rupee integers (JS number type).
 // Returning a number — not a string — is what makes Excel sort numerically.
@@ -134,36 +451,6 @@ function normalizeAmount(val) {
   return val;
 }
 
-// Returns true when the detail-page tender value is a placeholder that means
-// "see the document" — signals we should look for the real figure in the bid doc.
-function needsDocLookup(val) {
-  if (!val || val === 'N/A') return true;
-  return /refer\s*doc|as\s*per\s*doc|as\s*per\s*boq|as\s*per\s*nit|per\s*nit|see\s*doc|check\s*doc|tbd|to\s*be\s*decided|as\s*per\s*schedule|as\s*per\s*estimate|as\s*per\s*tender|as\s*per\s*drawing/i.test(String(val));
-}
-
-// Scan bid-document text for common "tender / estimated value" patterns and
-// return a JS number (so numeric sort still works) or 'N/A'.
-function extractAmountFromBidDoc(text) {
-  if (!text || text === 'N/A') return 'N/A';
-  const patterns = [
-    /estimated\s*(?:bid\s*)?(?:value|cost|amount)\s*[:\|]\s*([₹Rs\.INR\s]*[0-9,\.]+(?:\s*(?:crore[s]?|cr|lac[s]?|lakh[s]?|thousand|k))?)/i,
-    /tender\s*value\s*[:\|]\s*([₹Rs\.INR\s]*[0-9,\.]+(?:\s*(?:crore[s]?|cr|lac[s]?|lakh[s]?|thousand|k))?)/i,
-    /amount\s*put\s*to\s*tender\s*[:\|]\s*([₹Rs\.INR\s]*[0-9,\.]+(?:\s*(?:crore[s]?|cr|lac[s]?|lakh[s]?|thousand|k))?)/i,
-    /contract\s*(?:value|amount)\s*[:\|]\s*([₹Rs\.INR\s]*[0-9,\.]+(?:\s*(?:crore[s]?|cr|lac[s]?|lakh[s]?|thousand|k))?)/i,
-    /approximate(?:ly)?\s*(?:value|cost|estimate)\s*[:\|]\s*([₹Rs\.INR\s]*[0-9,\.]+(?:\s*(?:crore[s]?|cr|lac[s]?|lakh[s]?|thousand|k))?)/i,
-    /total\s*(?:estimated\s*)?(?:value|cost|amount|tender)\s*[:\|]\s*([₹Rs\.INR\s]*[0-9,\.]+(?:\s*(?:crore[s]?|cr|lac[s]?|lakh[s]?|thousand|k))?)/i,
-    /work\s*(?:value|amount|estimate)\s*[:\|]\s*([₹Rs\.INR\s]*[0-9,\.]+(?:\s*(?:crore[s]?|cr|lac[s]?|lakh[s]?|thousand|k))?)/i,
-    /nit\s*(?:value|amount|cost)\s*[:\|]\s*([₹Rs\.INR\s]*[0-9,\.]+(?:\s*(?:crore[s]?|cr|lac[s]?|lakh[s]?|thousand|k))?)/i,
-  ];
-  for (const pat of patterns) {
-    const m = text.match(pat);
-    if (m?.[1]) {
-      const norm = normalizeAmount(m[1].trim());
-      if (typeof norm === 'number') return norm;
-    }
-  }
-  return 'N/A';
-}
 
 // Convert 1-based column number → Excel letter (1→A, 26→Z, 27→AA …)
 function colNumToLetter(n) {
@@ -204,6 +491,8 @@ const COLS = [
   { key: 'State', label: 'State', width: 18 },
   { key: 'Document Fees', label: 'Document Fees', width: 16 },
   { key: 'EMD', label: 'EMD (₹)', width: 18 },
+  { key: 'EMD Exempt?', label: 'EMD Exempt?', width: 13 },
+  { key: 'EMD Exemption', label: 'EMD Exemption', width: 44 },
   { key: 'Tender Value', label: 'Tender Value (₹)', width: 18 },
   { key: 'Tender Type', label: 'Tender Type', width: 16 },
   { key: 'Bidding Type', label: 'Bidding Type', width: 16 },
@@ -220,14 +509,8 @@ const COLS = [
 ];
 
 // Columns whose values may contain \n — used for row-height calculation
-const TEXT_WRAP_COLS = new Set(['Additional Details', 'Bid Document Details']);
+const TEXT_WRAP_COLS = new Set(['Additional Details', 'Bid Document Details', 'EMD Exemption']);
 
-// ── Per-section tab colours (ARGB, fully opaque)
-const TAB_COLORS = [
-  'FF1565C0', 'FF00695C', 'FFB71C1C', 'FFE65100',
-  'FF1B5E20', 'FF4E342E', 'FF4A148C', 'FF006064',
-  'FF1A237E', 'FF37474F',
-];
 
 // ══════════════════════════════════════════════════════════════
 //  STYLE HELPERS
@@ -291,8 +574,9 @@ function fillDataSheet(ws, cols, rows, tabArgb, headerColor) {
   const bidIdx = cols.findIndex(c => c.key === 'Bid Document Details');
   const companyIdx   = cols.findIndex(c => c.key === 'Company');
   const importantIdx = cols.findIndex(c => c.key === 'Important');
-  const emdIdx = cols.findIndex(c => c.key === 'EMD');
-  const tvIdx = cols.findIndex(c => c.key === 'Tender Value');
+  const emdIdx      = cols.findIndex(c => c.key === 'EMD');
+  const emdExemptIdx = cols.findIndex(c => c.key === 'EMD Exempt?');
+  const tvIdx       = cols.findIndex(c => c.key === 'Tender Value');
   const bidStatusIdx = cols.findIndex(c => c.key === 'Bid Status');
 
   rows.forEach((r, i) => {
@@ -364,6 +648,13 @@ function fillDataSheet(ws, cols, rows, tabArgb, headerColor) {
     if (tvIdx >= 0 && typeof r['Tender Value'] === 'number') {
       row.getCell(tvIdx + 1).numFmt = '#,##0';
     }
+
+    // EMD Exempt? — centre-align
+    if (emdExemptIdx >= 0) {
+      const cell = row.getCell(emdExemptIdx + 1);
+      cell.alignment = { vertical: 'middle', horizontal: 'center' };
+      cell.font = { name: 'Calibri', size: 10, bold: true };
+    }
   });
 
   ws.autoFilter = {
@@ -392,6 +683,30 @@ function fillDataSheet(ws, cols, rows, tabArgb, headerColor) {
           style: {
             fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFC62828' } },
             font: { name: 'Calibri', size: 10, bold: true, color: { argb: 'FFFFFFFF' } }
+          }
+        },
+      ],
+    });
+  }
+
+  // EMD Exempt? column — Yes=green, No=light grey
+  if (emdExemptIdx >= 0) {
+    const exCol = colNumToLetter(emdExemptIdx + 1);
+    ws.addConditionalFormatting({
+      ref: `${exCol}2:${exCol}${endRow}`,
+      rules: [
+        {
+          type: 'cellIs', operator: 'equal', formulae: ['"Yes"'], priority: 3,
+          style: {
+            fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF2E7D32' } },
+            font: { name: 'Calibri', size: 10, bold: true, color: { argb: 'FFFFFFFF' } }
+          }
+        },
+        {
+          type: 'cellIs', operator: 'equal', formulae: ['"No"'], priority: 4,
+          style: {
+            fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFB0BEC5' } },
+            font: { name: 'Calibri', size: 10, bold: true, color: { argb: 'FF37474F' } }
           }
         },
       ],
@@ -659,7 +974,7 @@ async function buildExcel(sections) {
   }());
   makeFilterSheet('Corrigendum', 'FFFF6F00', masterColor, sectionColLetter, 'corrigendum');
 
-  sections.forEach((sec, idx) => {
+  sections.forEach((sec) => {
     const name = sectionBaseName(sec.section);
     makeFilterSheet(name, masterArgb, masterColor, sectionColLetter, name);
   });
@@ -719,20 +1034,56 @@ const MAPPED_KEYS = new Set([
   'Last Date of Bid Submission', 'Tender Opening Date', 'Address', 'Information Source',
 ]);
 
-async function scrapeTenderDetail(viewLink) {
+async function scrapeTenderDetail(viewLink, geminiKey) {
   try {
     const { data } = await axios.get(viewLink, { headers: HEADERS, timeout: 15000, maxRedirects: 4 });
     const $ = cheerio.load(data);
     const record = {};
+    const docLinks = [];
 
     $('table tr').each((_, row) => {
       const $tds = $(row).find('td');
       if ($tds.length >= 2) {
         const label = clean($tds.eq(0).text());
         const value = clean($tds.eq(1).text());
-        if (label && value && label.length < 80 && !label.startsWith('Download')) record[label] = value;
+        if (label.startsWith('Download')) {
+          // Check both columns for hrefs (link is in first td on tenderdetail.com)
+          $(row).find('a[href]').each((__, a) => {
+            let href = ($(a).attr('href') || '').replace(/\\/g, '/');
+            if (href && !href.startsWith('#') && !href.startsWith('javascript')) {
+              if (!href.startsWith('http')) href = `https://www.tenderdetail.com${href}`;
+              if (!docLinks.includes(href)) docLinks.push(href);
+            }
+          });
+        } else if (label && value && label.length < 80) {
+          record[label] = value;
+        }
       }
     });
+
+    // Broader fallback: any link on the page that looks like a document
+    if (docLinks.length === 0) {
+      $('a[href]').each((_, a) => {
+        const raw  = $(a).attr('href') || '';
+        const href = raw.replace(/\\/g, '/');
+        const text = clean($(a).text()).toLowerCase();
+        const lhref = href.toLowerCase();
+        if (
+          /\.(pdf|doc|docx)(\?|$)/i.test(href) ||
+          /download|document|corrigendum|nit|boq|tender.doc/i.test(text) ||
+          /\/download\//i.test(lhref) ||
+          /\/document\//i.test(lhref) ||
+          /tenderfiles\.com/i.test(lhref)
+        ) {
+          if (!href.startsWith('#') && !href.startsWith('javascript')) {
+            const full = href.startsWith('http') ? href : `https://www.tenderdetail.com${href}`;
+            if (!docLinks.includes(full)) docLinks.push(full);
+          }
+        }
+      });
+    }
+
+    console.log(`[${record['TDR'] || viewLink}] docLinks found: ${docLinks.length}`, docLinks.slice(0, 3));
 
     // Collect every detail-page field that is not already in a dedicated column
     const additionalLines = [];
@@ -740,7 +1091,20 @@ async function scrapeTenderDetail(viewLink) {
       if (!MAPPED_KEYS.has(k)) additionalLines.push(`${k}: ${v}`);
     }
 
+    // Pick only the UUID-matching NIT document (or ≤3 fallback), fetch once, reuse for everything
+    const targetLinks = pickTargetDocLinks(viewLink, docLinks);
+    const docTexts    = targetLinks.length ? await Promise.all(targetLinks.map(link => fetchDocText(link))) : [];
+
+    const emdExemption = await extractEmdExemptionFromTexts(docTexts, geminiKey);
+
+    // Use HTML-scraped values; fill from doc text if HTML only says "refer document"
+    let emdAmount   = normalizeAmount(record['EMD']);
     let tenderValue = normalizeAmount(record['Tender Value']);
+    if (docTexts.length && (needsDocLookup(emdAmount) || needsDocLookup(tenderValue))) {
+      const amounts = extractAmountsFromTexts(docTexts);
+      if (needsDocLookup(emdAmount)   && amounts.emd !== null) emdAmount   = amounts.emd;
+      if (needsDocLookup(tenderValue) && amounts.tv  !== null) tenderValue = amounts.tv;
+    }
 
     return {
       'Company': '',
@@ -755,7 +1119,9 @@ async function scrapeTenderDetail(viewLink) {
       'City': record['City'] || 'N/A',
       'State': record['State'] || 'N/A',
       'Document Fees': record['Document Fees'] || 'N/A',
-      'EMD': normalizeAmount(record['EMD']),
+      'EMD': emdAmount,
+      'EMD Exempt?': /^(no exemption mentioned|n\/a)$/i.test(emdExemption.trim()) ? 'No' : 'Yes',
+      'EMD Exemption': emdExemption,
       'Tender Value': tenderValue,
       'Tender Type': record['Tender Type'] || 'N/A',
       'Bidding Type': record['Bidding Type'] || 'N/A',
@@ -773,7 +1139,7 @@ async function scrapeTenderDetail(viewLink) {
       'Company': '', 'Important': false, 'Filled Date': '', 'Filled By': '', 'Bid Status': '',
       'TDR': 'N/A', 'Tender No': 'N/A', 'Tendering Authority': 'N/A',
       'Tender Brief': `Error: ${e.message}`, 'City': 'N/A', 'State': 'N/A',
-      'Document Fees': 'N/A', 'EMD': 'N/A', 'Tender Value': 'N/A',
+      'Document Fees': 'N/A', 'EMD': 'N/A', 'EMD Exempt?': 'N/A', 'EMD Exemption': 'N/A', 'Tender Value': 'N/A',
       'Tender Type': 'N/A', 'Bidding Type': 'N/A', 'Competition Type': 'N/A',
       'Publish Date': 'N/A', 'Last Date of Bid Submission': 'N/A',
       'Tender Opening Date': 'N/A', 'Address': 'N/A', 'Information Source': 'N/A',
@@ -801,13 +1167,14 @@ async function pooledMap(items, fn, limit, onProgress) {
 
 function sseWrite(res, event, data) {
   res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  if (typeof res.flush === 'function') res.flush();
 }
 
 // ══════════════════════════════════════════════════════════════
 //  GET /scrape-deep — SSE: fetch all detail pages → build Excel
 // ══════════════════════════════════════════════════════════════
 app.get('/scrape-deep', async (req, res) => {
-  const { url } = req.query;
+  const { url, geminiKey: reqGeminiKey } = req.query;
   if (!url || !validateUrl(url)) {
     res.status(400).end();
     return;
@@ -849,7 +1216,7 @@ app.get('/scrape-deep', async (req, res) => {
 
       const records = await pooledMap(
         sec.tenders,
-        (t) => scrapeTenderDetail(t.viewLink),
+        (t) => scrapeTenderDetail(t.viewLink, reqGeminiKey || undefined),
         CONCURRENCY,
         (sectionDone) => {
           globalDone++;
@@ -874,9 +1241,20 @@ app.get('/scrape-deep', async (req, res) => {
     fs.writeFileSync(filePath, excelBuf);
     setTimeout(() => { try { fs.unlinkSync(filePath); } catch (_) {} }, 30 * 60 * 1000);
 
-    // Upload to Google Sheets in parallel with returning the done event
-    sseWrite(res, 'status', { phase: 3, message: 'Uploading to Google Sheets…' });
-    const sheetsUrl = await uploadToGoogleSheets(excelBuf, safeName);
+    // Phase 4 — Google Sheets upload with fake progress ticks
+    sseWrite(res, 'status', { phase: 4, message: 'Uploading to Google Sheets…', total });
+    let sheetsPct = 0;
+    const sheetsTicker = setInterval(() => {
+      sheetsPct = Math.min(90, sheetsPct + Math.floor(Math.random() * 8) + 4);
+      sseWrite(res, 'sheets_progress', { pct: sheetsPct });
+    }, 1800);
+    let sheetsUrl;
+    try {
+      sheetsUrl = await uploadToGoogleSheets(excelBuf, safeName);
+    } finally {
+      clearInterval(sheetsTicker);
+    }
+    sseWrite(res, 'sheets_progress', { pct: 100 });
 
     sseWrite(res, 'done', { token, filename: safeName, totalTenders: total, sections: sections.length, pageTitle, sheetsUrl });
   } catch (err) {
