@@ -4,19 +4,21 @@
  * PROTECTION MODEL
  *   All Sections        → cols A (Company) and B (Important) editable; cols C+ locked
  *   Gravity/TT/Quickman → cols A (Filled), B (Filled Date), C (Filled By) editable; cols D+ locked
- *   All other sheets    → header row (row 1) free so AutoFilter works for everyone;
- *                         data rows (row 2+) fully locked
+ *   All other sheets    → header row (row 1) free; data rows (row 2+) fully locked
  *
  * CHIP DROPDOWNS & CHECKBOXES (Google Sheets native)
  *   All Sections → Company (col A) chip + multi-select panel
  *                  Important (col B) BOOLEAN checkbox
  *   Company sheets → Filled (col A) BOOLEAN checkbox
  *
- * WHY RANGE PROTECTION INSTEAD OF SHEET PROTECTION
- *   Sheet-level protection blocks the AutoFilter arrows for non-owners.
- *   Range-level protection (startRowIndex 1+) leaves the header row free, so
- *   everyone with the link can click filter arrows and filter rows without
- *   being able to edit the protected cell values.
+ * FILTER STRATEGY
+ *   Google Sheets now blocks AutoFilter for non-owners even with range-level protection,
+ *   because filtering hides rows that contain protected cells.
+ *   Fix: two layers —
+ *     1. setBasicFilter — native Google Sheets filter (replaces the XLSX-converted AutoFilter).
+ *        Works for anyone with Editor (Writer) access from the shared link.
+ *     2. addFilterView — personal filter view that works for ANY user regardless of
+ *        protection level, accessible via Data → Filter views.
  */
 
 var COMPANY_SHEETS = ['Gravity', 'Total Tech', 'Quickman'];
@@ -201,9 +203,46 @@ function doPost(e) {
           }
         });
       }
+      // ── STEP D  Filters — BasicFilter + FilterView ──────────────────────────
+      // Google Sheets now blocks AutoFilter for non-owners on protected sheets.
+      // We set two filters so everyone can filter regardless of their access level.
+
+      // 1. Native BasicFilter — replaces the XLSX-converted AutoFilter.
+      //    Works for anyone with Editor (Writer) access via the shared link.
+      requests.push({
+        setBasicFilter: {
+          filter: {
+            range: {
+              sheetId: sheetId,
+              startRowIndex: 0,       // header row included
+              startColumnIndex: 0,
+              endColumnIndex: cols
+              // no endRowIndex → auto-covers all data rows
+            }
+          }
+        }
+      });
+
+      // 2. Filter View — personal view that bypasses protection entirely.
+      //    Any user (even viewers) can activate it via Data → Filter views.
+      requests.push({
+        addFilterView: {
+          filter: {
+            title: 'Filter Data',
+            range: {
+              sheetId: sheetId,
+              startRowIndex: 0,
+              endRowIndex: rows,
+              startColumnIndex: 0,
+              endColumnIndex: cols
+            }
+          }
+        }
+      });
+
     } // end for sheets
 
-    // ── STEP D  Execute all requests in a single batch ───────────────────────
+    // ── STEP E  Execute all requests in a single batch ───────────────────────
     if (requests.length > 0) {
       Sheets.Spreadsheets.batchUpdate({ requests: requests }, fileId);
     }
