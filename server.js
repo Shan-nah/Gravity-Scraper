@@ -1250,7 +1250,15 @@ app.get('/scrape-deep', async (req, res) => {
     }, 1800);
     let sheetsUrl;
     try {
-      sheetsUrl = await uploadToGoogleSheets(excelBuf, safeName);
+      // Retry up to 3 times — transient DNS failures (ENOTFOUND script.google.com) are common
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        sheetsUrl = await uploadToGoogleSheets(excelBuf, safeName);
+        if (sheetsUrl) break;
+        if (attempt < 3) {
+          console.warn(`Sheets upload attempt ${attempt} failed, retrying in ${attempt * 2}s…`);
+          await new Promise(r => setTimeout(r, attempt * 2000));
+        }
+      }
     } finally {
       clearInterval(sheetsTicker);
     }
@@ -1277,6 +1285,30 @@ app.get('/download/:token', (req, res) => {
   res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   res.sendFile(filePath);
+});
+
+// ══════════════════════════════════════════════════════════════
+//  GET /retry-sheets/:token — re-attempt Sheets upload without re-scraping
+// ══════════════════════════════════════════════════════════════
+app.get('/retry-sheets/:token', async (req, res) => {
+  const token = req.params.token.replace(/[^a-f0-9]/gi, '');
+  const filePath = path.join(TMP_DIR, `${token}.xlsx`);
+  if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'File expired. Please scrape again.' });
+
+  try {
+    const buf = fs.readFileSync(filePath);
+    const name = (req.query.name || 'tender_data').replace(/[^a-z0-9_\-]/gi, '_');
+    let sheetsUrl;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      sheetsUrl = await uploadToGoogleSheets(buf, name);
+      if (sheetsUrl) break;
+      if (attempt < 3) await new Promise(r => setTimeout(r, attempt * 2000));
+    }
+    if (sheetsUrl) return res.json({ sheetsUrl });
+    return res.status(502).json({ error: 'Upload failed after 3 attempts. Check server connectivity.' });
+  } catch (e) {
+    return res.status(500).json({ error: e.message });
+  }
 });
 
 // ══════════════════════════════════════════════════════════════
