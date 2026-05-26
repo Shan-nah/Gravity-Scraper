@@ -1,10 +1,12 @@
 /**
  * Gravity Scraper — Google Apps Script Bridge
  * ─────────────────────────────────────────────
- * PROTECTION MODEL
- *   All Sections        → cols A (Company) and B (Important) editable; cols C+ locked
- *   Gravity/TT/Quickman → cols A (Filled), B (Filled Date), C (Filled By) editable; cols D+ locked
- *   All other sheets    → header row (row 1) free; data rows (row 2+) fully locked
+ * NO RANGE PROTECTIONS
+ *   Google Sheets treats BasicFilter changes as "edits" to protected rows and blocks
+ *   them for non-owners, showing "You are trying to edit a protected cell or object."
+ *   Since filtering is the primary use-case, all range protections are removed.
+ *   The shared link (writer access) is the access gate — anyone without the link
+ *   cannot open the file at all.
  *
  * CHIP DROPDOWNS & CHECKBOXES (Google Sheets native)
  *   All Sections → Company (col A) chip + multi-select panel
@@ -12,13 +14,8 @@
  *   Company sheets → Filled (col A) BOOLEAN checkbox
  *
  * FILTER STRATEGY
- *   Google Sheets now blocks AutoFilter for non-owners even with range-level protection,
- *   because filtering hides rows that contain protected cells.
- *   Fix: two layers —
- *     1. setBasicFilter — native Google Sheets filter (replaces the XLSX-converted AutoFilter).
- *        Works for anyone with Editor (Writer) access from the shared link.
- *     2. addFilterView — personal filter view that works for ANY user regardless of
- *        protection level, accessible via Data → Filter views.
+ *   1. setBasicFilter — native Google Sheets BasicFilter on every sheet.
+ *   2. addFilterView  — personal "Filter Data" view via Data → Filter views.
  */
 
 var COMPANY_SHEETS = ['Gravity', 'Total Tech', 'Quickman'];
@@ -61,7 +58,6 @@ function doPost(e) {
     // 3 ── Fetch all sheet metadata
     var ss = Sheets.Spreadsheets.get(fileId);
     var sheets = ss.sheets;
-    var owner = Session.getEffectiveUser().getEmail();
 
     var requests = [];
 
@@ -73,9 +69,8 @@ function doPost(e) {
       var rows = grid.rowCount || 1000;
       var cols = grid.columnCount || 30;
 
-      // ── STEP A  Remove any protection that was imported from the XLSX ────────
-      // Google Sheets may import XLSX sheet-level protection. We remove it so our
-      // finer-grained range protection takes effect correctly.
+      // ── STEP A  Remove any protection imported from the XLSX ─────────────────
+      // Range protections block BasicFilter for non-owners, so we remove them all.
       var existingProtections = sheet.protectedRanges || [];
       for (var p = 0; p < existingProtections.length; p++) {
         requests.push({
@@ -85,76 +80,20 @@ function doPost(e) {
         });
       }
 
-      // ── STEP B  Apply new range-based protection ─────────────────────────────
-
-      if (title === 'All Sections') {
-        // Lock cols C+ (index 2+); leave Company (A=0) and Status (B=1) free
-        requests.push({
-          addProtectedRange: {
-            protectedRange: {
-              range: {
-                sheetId: sheetId,
-                startRowIndex: 1,      // skip header row
-                endRowIndex: rows,
-                startColumnIndex: 2,      // col C onwards
-                endColumnIndex: cols
-              },
-              description: 'Scraped data — read-only. Only Company (A) and Important (B) are editable.',
-              editors: { users: [owner] }
-            }
-          }
-        });
-
-      } else if (COMPANY_SHEETS.indexOf(title) !== -1) {
-        // Company sheets: lock cols D+ (index 3+); leave Filled (A=0), Filled Date (B=1), Filled By (C=2) free
-        requests.push({
-          addProtectedRange: {
-            protectedRange: {
-              range: {
-                sheetId: sheetId,
-                startRowIndex: 1,
-                endRowIndex: rows,
-                startColumnIndex: 3,      // col D onwards (formula data starts here)
-                endColumnIndex: cols
-              },
-              description: 'Formula-driven data — read-only. Filled (A), Filled Date (B) and Filled By (C) are editable.',
-              editors: { users: [owner] }
-            }
-          }
-        });
-
-        // Filled (col A) — BOOLEAN checkbox
+      // ── STEP B  Checkbox for company sheets (Filled col A) ───────────────────
+      if (COMPANY_SHEETS.indexOf(title) !== -1) {
         requests.push({
           setDataValidation: {
             range: {
               sheetId: sheetId,
               startRowIndex: 1,
               endRowIndex: rows,
-              startColumnIndex: 0,    // col A
+              startColumnIndex: 0,
               endColumnIndex: 1
             },
             rule: {
               condition: { type: 'BOOLEAN' },
               showCustomUi: true
-            }
-          }
-        });
-
-      } else {
-        // All other sheets (Important, Filled, Corrigendum, section tabs):
-        // Lock data rows 2+ entirely. Header row (index 0) stays free so AutoFilter arrows work.
-        requests.push({
-          addProtectedRange: {
-            protectedRange: {
-              range: {
-                sheetId: sheetId,
-                startRowIndex: 1,      // row 2 onwards
-                endRowIndex: rows,
-                startColumnIndex: 0,
-                endColumnIndex: cols
-              },
-              description: 'Scraped data — read-only. Use the filter arrows in the header to filter.',
-              editors: { users: [owner] }
             }
           }
         });
