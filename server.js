@@ -780,13 +780,11 @@ async function buildExcel(sections) {
   const allWs = wb.addWorksheet(uniqueName('All Sections'));
   fillDataSheet(allWs, masterCols, allRows, 'FF2C3E50', '2C3E50');
 
-  // Unlock Company (A) and Important (B) in All Sections
-  for (let c = 1; c <= 2; c++) {
-    allWs.getColumn(c).protection = { locked: false };
-    allWs.getRow(1).getCell(c).protection = { locked: true };
-  }
-  allWs.getRow(1).getCell(1).note = 'Select company or type comma-separated e.g. Gravity,Total Tech';
-  allWs.getRow(1).getCell(2).note = 'Check this box to mark the tender as Important';
+  // Hide Company column in All Sections — company is now assigned in the Important tab
+  allWs.getColumn(1).hidden = true;
+
+  // Important (col B) stays visible as a checkbox
+  allWs.getRow(1).getCell(2).note = 'Check this box to mark the tender as Important, then assign a company in the Important tab';
 
   //  Helper: builds a formula-driven filter sheet.
   //
@@ -802,22 +800,28 @@ async function buildExcel(sections) {
     ws.properties = { tabColor: { argb: tabArgb } };
     ws.views      = [{ state: 'frozen', ySplit: 1, showGridLines: true }];
 
-    // For company sheets: Filled checkbox (A) + Filled Date (B) + Filled By (C) before the formula data
+    // Company sheets: Filled/FilledDate/FilledBy prefix
+    // Important tab: Company prefix (user assigns company after marking as important)
     const inputColDefs = options.isCompanySheet
       ? [
           { label: 'Filled',      key: 'FilledCheck', width: 10 },
           { label: 'Filled Date', key: 'FilledDate',  width: 16 },
           { label: 'Filled By',   key: 'FilledBy',    width: 18 },
         ]
-      : [];
+      : name === 'Important'
+        ? [{ label: 'Company', key: 'Company', width: 16 }]
+        : [];
 
-    // Company sheets strip Company AND Important from formula output (implied by sheet name/context)
-    // Important and Filled sheets widen Company col; other sheets use masterCols as-is
+    // Important tab: strip Company+Important from formula output (both are handled separately)
+    // Company sheets: strip Company+Important (masterCols.slice(2))
+    // Filled: widen Company col; others: plain masterCols
     const displayCols = options.isCompanySheet
       ? masterCols.slice(2)
-      : (name === 'Important' || name === 'Filled')
-        ? masterCols.map(function(c) { return c.key === 'Company' ? Object.assign({}, c, { width: 32 }) : c; })
-        : masterCols;
+      : name === 'Important'
+        ? masterCols.filter(function(c) { return c.key !== 'Company' && c.key !== 'Important'; })
+        : name === 'Filled'
+          ? masterCols.map(function(c) { return c.key === 'Company' ? Object.assign({}, c, { width: 32 }) : c; })
+          : masterCols;
     const displayColCount = displayCols.length;
 
     const allSheetCols  = [...inputColDefs, ...displayCols];
@@ -835,13 +839,17 @@ async function buildExcel(sections) {
     const sColLetter = colNumToLetter(masterCols.findIndex(c => c.key === 'Section') + 1);
     const bColLetter = colNumToLetter(masterCols.findIndex(c => c.key === 'Tender Brief') + 1);
 
-    const src       = `'All Sections'!A2:${lastCol}${maxRow}`;
-    const critRange = `'All Sections'!$${filterCol}$2:$${filterCol}$${maxRow}`;
+    // Company sheets pull from Important tab (col A = Company prefix, col B+ = tender data)
+    // All other sheets pull from All Sections as usual
+    const impOutputLastCol = colNumToLetter(masterCols.length - 1); // last col of Important tab formula output
+    const src       = options.isCompanySheet
+      ? `'Important'!B2:${impOutputLastCol}${maxRow}`
+      : `'All Sections'!A2:${lastCol}${maxRow}`;
+    const filterSheetName = options.isCompanySheet ? 'Important' : 'All Sections';
+    const critRange = `'${filterSheetName}'!$${filterCol}$2:$${filterCol}$${maxRow}`;
 
-    // CHOOSECOLS {3,4,...,N} strips Company (1) and Important (2) for company sheets
-    const colSeq = options.isCompanySheet
-      ? '{' + Array.from({ length: masterCols.length - 2 }, (_, i) => i + 3).join(',') + '}'
-      : null;
+    // CHOOSECOLS seq for Important tab: strip col 1 (Company) and col 2 (Important) from All Sections output
+    const impColSeq = '{' + Array.from({ length: masterCols.length - 2 }, (_, i) => i + 3).join(',') + '}';
     // Fallback empty row — width must match the formula output column count
     const emptyRow = '{' + Array(displayColCount).fill('""').join(',') + '}';
 
@@ -852,12 +860,13 @@ async function buildExcel(sections) {
       const briefRange   = `'All Sections'!$${bColLetter}$2:$${bColLetter}$${maxRow}`;
       filterFormula = `IFERROR(FILTER(${src},(ISNUMBER(SEARCH("corrigendum",${sectionRange})))+(ISNUMBER(SEARCH("corrigendum",${briefRange})))>0),IF(ROWS(A2:A2)=1,"No Corrigendum tenders found",""))`;
     } else if (name === 'Important') {
-      // Filter rows where Important checkbox = TRUE
-      filterFormula = `IFERROR(FILTER(${src},${critRange}=TRUE),IF(ROWS(A2:A2)=1,"No important tenders",""))`;
+      // Filter Important=TRUE rows, strip Company (col1) + Important (col2) from output via CHOOSECOLS
+      // Formula placed at B2 (col A is the editable Company prefix)
+      filterFormula = `IFERROR(CHOOSECOLS(FILTER(${src},${critRange}=TRUE),${impColSeq}),IF(ROWS(B2:B2)=1,"No important tenders",""))`;
     } else if (options.isCompanySheet) {
-      // CHOOSECOLS strips Company column; formula is placed at C2 (after the two input cols)
+      // Filter from Important tab by Company prefix (col A); source already has Company+Important stripped
       const cond = `ISNUMBER(SEARCH("${filterValue}",${critRange}))`;
-      filterFormula = `IFERROR(CHOOSECOLS(FILTER(${src},${cond}),${colSeq}),${emptyRow})`;
+      filterFormula = `IFERROR(FILTER(${src},${cond}),${emptyRow})`;
     } else {
       filterFormula = `IFERROR(FILTER(${src},ISNUMBER(SEARCH("${filterValue}",${critRange}))),IF(ROWS(A2:A2)=1,"No tenders assigned to ${name}",""))`;
     }
@@ -908,9 +917,26 @@ async function buildExcel(sections) {
       to:   { row: 1, column: totalColCount },
     };
 
-    // Protection: Apps Script applies range-based protection after Google Sheets upload.
-    // No ws.protect() here — XLSX sheet-level protection conflicts with the Apps Script's
-    // finer-grained range protection and blocks AutoFilter for non-owner users.
+    // Important tab: Company dropdown on the editable prefix column (col A)
+    if (name === 'Important') {
+      for (let r = 2; r <= Math.min(maxRow, 1000); r++) {
+        ws.getCell(r, 1).dataValidation = {
+          type: 'list', allowBlank: true,
+          formulae: ['"Gravity,Total Tech,Quickman"'],
+          showErrorMessage: false,
+          showInputMessage: true,
+          promptTitle: 'Company',
+          prompt: 'Pick one or type comma-separated e.g. Gravity,Total Tech',
+        };
+      }
+    }
+
+    // Hide Company and Important in formula-driven sheets — they show redundant TRUE/FALSE values
+    // (Company is hidden in All Sections; Important is only meaningful as a checkbox there)
+    ['Company', 'Important'].forEach(function(key) {
+      const idx = displayCols.findIndex(function(c) { return c.key === key; });
+      if (idx >= 0) ws.getColumn(idx + 1 + inputOffset).hidden = true;
+    });
 
     return ws;
   }
@@ -974,9 +1000,16 @@ async function buildExcel(sections) {
   }());
   makeFilterSheet('Corrigendum', 'FFFF6F00', masterColor, sectionColLetter, 'corrigendum');
 
-  sections.forEach((sec) => {
-    const name = sectionBaseName(sec.section);
-    makeFilterSheet(name, masterArgb, masterColor, sectionColLetter, name);
+  const SECTION_COLORS = [
+    'FF1565C0', 'FF00695C', 'FFE65100', 'FF4A148C',
+    'FF006064', 'FF1B5E20', 'FF4E342E', 'FF37474F',
+    'FF880E4F', 'FF0D47A1',
+  ];
+  sections.forEach((sec, idx) => {
+    const name      = sectionBaseName(sec.section);
+    const tabArgb   = SECTION_COLORS[idx % SECTION_COLORS.length];
+    const hdrColor  = tabArgb.slice(2); // strip FF prefix for headerStyle
+    makeFilterSheet(name, tabArgb, hdrColor, sectionColLetter, name);
   });
 
   return wb.xlsx.writeBuffer();
