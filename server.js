@@ -809,7 +809,7 @@ async function buildExcel(sections) {
           { label: 'Filled By',   key: 'FilledBy',    width: 18 },
         ]
       : name === 'Important'
-        ? [{ label: 'Company', key: 'Company', width: 16 }]
+        ? [{ label: 'Filled?', key: 'FilledStatus', width: 10 }, { label: 'Company', key: 'Company', width: 16 }]
         : [];
 
     // Important tab: strip Company+Important from formula output (both are handled separately)
@@ -830,7 +830,11 @@ async function buildExcel(sections) {
 
     const inputOffset = inputColDefs.length;  // 0 or 3
 
-    ws.columns = allSheetCols.map(c => ({ header: c.label, key: c.key, width: c.width }));
+    ws.properties.defaultRowHeight = 18;
+    ws.columns = allSheetCols.map(c => ({
+      header: c.label, key: c.key, width: c.width,
+      style: { font: { name: 'Calibri', size: 10 }, alignment: { vertical: 'top', wrapText: false } },
+    }));
     const hdr  = ws.getRow(1);
     hdr.values = allSheetCols.map(c => c.label);
     headerStyle(hdr, hdrHex, totalColCount);
@@ -839,11 +843,11 @@ async function buildExcel(sections) {
     const sColLetter = colNumToLetter(masterCols.findIndex(c => c.key === 'Section') + 1);
     const bColLetter = colNumToLetter(masterCols.findIndex(c => c.key === 'Tender Brief') + 1);
 
-    // Company sheets pull from Important tab (col A = Company prefix, col B+ = tender data)
+    // Company sheets pull from Important tab (cols A-B are Filled?+Company; formula output starts at C)
     // All other sheets pull from All Sections as usual
-    const impOutputLastCol = colNumToLetter(masterCols.length - 1); // last col of Important tab formula output
+    const impOutputLastCol = colNumToLetter(masterCols.length); // Important has 2 input cols → formula output ends at masterCols.length
     const src       = options.isCompanySheet
-      ? `'Important'!B2:${impOutputLastCol}${maxRow}`
+      ? `'Important'!C2:${impOutputLastCol}${maxRow}`
       : `'All Sections'!A2:${lastCol}${maxRow}`;
     const filterSheetName = options.isCompanySheet ? 'Important' : 'All Sections';
     const critRange = `'${filterSheetName}'!$${filterCol}$2:$${filterCol}$${maxRow}`;
@@ -861,8 +865,8 @@ async function buildExcel(sections) {
       filterFormula = `IFERROR(FILTER(${src},(ISNUMBER(SEARCH("corrigendum",${sectionRange})))+(ISNUMBER(SEARCH("corrigendum",${briefRange})))>0),IF(ROWS(A2:A2)=1,"No Corrigendum tenders found",""))`;
     } else if (name === 'Important') {
       // Filter Important=TRUE rows, strip Company (col1) + Important (col2) from output via CHOOSECOLS
-      // Formula placed at B2 (col A is the editable Company prefix)
-      filterFormula = `IFERROR(CHOOSECOLS(FILTER(${src},${critRange}=TRUE),${impColSeq}),IF(ROWS(B2:B2)=1,"No important tenders",""))`;
+      // Formula placed at C2 (col A = Filled?, col B = Company)
+      filterFormula = `IFERROR(CHOOSECOLS(FILTER(${src},${critRange}=TRUE),${impColSeq}),IF(ROWS(C2:C2)=1,"No important tenders",""))`;
     } else if (options.isCompanySheet) {
       // Filter from Important tab by Company prefix (col A); source already has Company+Important stripped
       const cond = `ISNUMBER(SEARCH("${filterValue}",${critRange}))`;
@@ -911,16 +915,34 @@ async function buildExcel(sections) {
       }
     }
 
+    // EMD Exempt? column — Yes=green, No=light grey (matches All Sections styling)
+    const emdExemptPos = allSheetCols.findIndex(c => c.key === 'EMD Exempt?');
+    if (emdExemptPos >= 0) {
+      const exCol = colNumToLetter(emdExemptPos + 1);
+      ws.addConditionalFormatting({
+        ref: `${exCol}2:${exCol}${maxRow}`,
+        rules: [
+          { type: 'cellIs', operator: 'equal', formulae: ['"Yes"'], priority: 3,
+            style: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF2E7D32' } },
+                     font: { name: 'Calibri', size: 10, bold: true, color: { argb: 'FFFFFFFF' } } } },
+          { type: 'cellIs', operator: 'equal', formulae: ['"No"'], priority: 4,
+            style: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFB0BEC5' } },
+                     font: { name: 'Calibri', size: 10, bold: true, color: { argb: 'FF37474F' } } } },
+        ],
+      });
+    }
+
     // AutoFilter across all display columns (input cols A-B + formula cols C+)
     ws.autoFilter = {
       from: { row: 1, column: 1 },
       to:   { row: 1, column: totalColCount },
     };
 
-    // Important tab: Company dropdown on the editable prefix column (col A)
+    // Important tab: Filled? in col A (BYROW formula), Company dropdown in col B
     if (name === 'Important') {
+      // Company dropdown — col B (col 2), since col A is Filled?
       for (let r = 2; r <= Math.min(maxRow, 1000); r++) {
-        ws.getCell(r, 1).dataValidation = {
+        ws.getCell(r, 2).dataValidation = {
           type: 'list', allowBlank: true,
           formulae: ['"Gravity,Total Tech,Quickman"'],
           showErrorMessage: false,
@@ -928,6 +950,32 @@ async function buildExcel(sections) {
           promptTitle: 'Company',
           prompt: 'Pick one or type comma-separated e.g. Gravity,Total Tech',
         };
+      }
+
+      // BYROW formula in col A — checks TDR against all company sheets' Filled checkbox
+      const tdrPosInDisplay = displayCols.findIndex(c => c.key === 'TDR');
+      if (tdrPosInDisplay >= 0) {
+        // inputOffset = 2 (Filled?, Company), so TDR is at col 2 + tdrPosInDisplay + 1
+        const tdrColInImp  = colNumToLetter(inputOffset + tdrPosInDisplay + 1);  // D
+        const tdrColInComp = colNumToLetter(3 + tdrPosInDisplay + 1);            // E (company sheets have 3 input cols)
+
+        ws.getCell(2, 1).value = { formula:
+          `BYROW(${tdrColInImp}2:${tdrColInImp}${maxRow},LAMBDA(r,IF(r="","",` +
+          `IF(COUNTIFS(Gravity!$${tdrColInComp}$2:$${tdrColInComp}$${maxRow},r,Gravity!$A$2:$A$${maxRow},TRUE)+` +
+          `COUNTIFS('Total Tech'!$${tdrColInComp}$2:$${tdrColInComp}$${maxRow},r,'Total Tech'!$A$2:$A$${maxRow},TRUE)+` +
+          `COUNTIFS(Quickman!$${tdrColInComp}$2:$${tdrColInComp}$${maxRow},r,Quickman!$A$2:$A$${maxRow},TRUE)>0,` +
+          `"Yes","No"))))` };
+
+        // Green for Yes, red for No in col A
+        ws.addConditionalFormatting({
+          ref: `A2:A${maxRow}`,
+          rules: [
+            { type: 'containsText', operator: 'containsText', text: 'Yes', priority: 48,
+              style: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFA5D6A7' } }, font: { bold: true } } },
+            { type: 'containsText', operator: 'containsText', text: 'No',  priority: 49,
+              style: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEF9A9A' } }, font: { bold: true } } },
+          ],
+        });
       }
     }
 
@@ -947,9 +995,9 @@ async function buildExcel(sections) {
   const masterArgb  = 'FF2C3E50';
 
   // Company sheets — fully unlocked; Filled Date / Filled By entered here
-  makeFilterSheet('Gravity',    masterArgb, masterColor, 'A', 'Gravity',    { isCompanySheet: true });
-  makeFilterSheet('Total Tech', masterArgb, masterColor, 'A', 'Total Tech', { isCompanySheet: true });
-  makeFilterSheet('Quickman',   masterArgb, masterColor, 'A', 'Quickman',   { isCompanySheet: true });
+  makeFilterSheet('Gravity',    masterArgb, masterColor, 'B', 'Gravity',    { isCompanySheet: true });
+  makeFilterSheet('Total Tech', masterArgb, masterColor, 'B', 'Total Tech', { isCompanySheet: true });
+  makeFilterSheet('Quickman',   masterArgb, masterColor, 'B', 'Quickman',   { isCompanySheet: true });
 
   // Important: filterCol = Important column (B in All Sections), formula uses =TRUE (checkbox)
   makeFilterSheet('Important', 'FFB71C1C', masterColor, colNumToLetter(masterCols.findIndex(function(c) { return c.key === 'Important'; }) + 1), 'Yes');
