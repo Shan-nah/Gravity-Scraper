@@ -1121,7 +1121,7 @@ const MAPPED_KEYS = new Set([
   'Last Date of Bid Submission', 'Tender Opening Date', 'Address', 'Information Source',
 ]);
 
-async function scrapeTenderDetail(viewLink, geminiKey) {
+async function scrapeTenderDetail(viewLink, geminiKey, listingTdrid = null) {
   try {
     const { data } = await axios.get(viewLink, { headers: HEADERS, timeout: 15000, maxRedirects: 4 });
     const $ = cheerio.load(data);
@@ -1203,7 +1203,7 @@ async function scrapeTenderDetail(viewLink, geminiKey) {
       'Filled Date': '',
       'Filled By': '',
       'Bid Status': '',
-      'TDR': record['TDR'] || 'N/A',
+      'TDR': (listingTdrid && listingTdrid !== 'N/A') ? listingTdrid : (record['TDR'] || 'N/A'),
       'Tender No': record['Tender No'] || record['Tender ID'] || 'N/A',
       'Tendering Authority': record['Tendering Authority'] || record['Company Name'] || 'N/A',
       'Tender Brief': record['Tender Brief'] || 'N/A',
@@ -1307,7 +1307,7 @@ app.get('/scrape-deep', async (req, res) => {
 
       const records = await pooledMap(
         sec.tenders,
-        (t) => scrapeTenderDetail(t.viewLink, reqGeminiKey || undefined),
+        (t) => scrapeTenderDetail(t.viewLink, reqGeminiKey || undefined, t.tenderId),
         CONCURRENCY,
         (sectionDone) => {
           globalDone++;
@@ -1399,7 +1399,7 @@ app.get('/test-excel', async (req, res) => {
       const enriched = [];
       for (const sec of mini) {
         const records = await Promise.all(
-          sec.tenders.map(t => scrapeTenderDetail(t.viewLink))
+          sec.tenders.map(t => scrapeTenderDetail(t.viewLink, null, t.tenderId))
         );
         enriched.push({ section: sec.section, tenders: records });
       }
