@@ -422,7 +422,12 @@ const HEADERS = {
 };
 const CONCURRENCY = Math.max(6, geminiApiKeys.length * 3);
 
-function clean(t) { return (t || '').replace(/\s+/g, ' ').trim(); }
+// Strip characters invalid in XML 1.0 (U+FFFE, U+FFFF, and control chars except tab/LF/CR)
+// Some Indian govt portal HTML contains U+FFFE which corrupts the XLSX sharedStrings.xml
+const INVALID_XML_RE = /[\x00-\x08\x0B\x0C\x0E-\x1F￾￿]/g;
+function clean(t) {
+  return (t || '').replace(INVALID_XML_RE, '').replace(/\s+/g, ' ').trim();
+}
 
 
 // Convert EMD / Tender Value strings to plain rupee integers (JS number type).
@@ -1314,12 +1319,16 @@ app.get('/scrape-deep', async (req, res) => {
     }
 
     sseWrite(res, 'status', { phase: 3, message: 'Building Excel file…' });
+    const totalRows = enriched.reduce((n, s) => n + s.tenders.length, 0);
+    console.log(`▶ buildExcel: ${enriched.length} sections, ${totalRows} tenders`);
     const excelBuf = await buildExcel(enriched);
+    console.log(`✓ buildExcel done: ${(excelBuf.length/1024).toFixed(0)}KB`);
 
     const token    = crypto.randomBytes(16).toString('hex');
     const safeName = tenderDate; // Use the date as the filename
     const filePath = path.join(TMP_DIR, `${token}.xlsx`);
     fs.writeFileSync(filePath, excelBuf);
+    console.log(`✓ XLSX written: ${filePath}`);
     setTimeout(() => { try { fs.unlinkSync(filePath); } catch (_) {} }, 30 * 60 * 1000);
 
     // Phase 4 — Google Sheets upload with fake progress ticks
@@ -1377,10 +1386,10 @@ app.get('/test-excel', async (req, res) => {
       const { data } = await axios.get(testUrl, { headers: HEADERS, timeout: 20000 });
       const $ = cheerio.load(data);
       const sections = parseDailyDigest($);
-      // Take first 3 tenders from each section (max 3 sections)
-      const mini = sections.slice(0, 3).map(s => ({
+      // Take first 2 tenders from ALL sections to test full structure
+      const mini = sections.map(s => ({
         section: s.section,
-        tenders: s.tenders.slice(0, 3),
+        tenders: s.tenders.slice(0, 2),
       }));
       const enriched = [];
       for (const sec of mini) {
