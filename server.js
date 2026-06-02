@@ -300,47 +300,59 @@ function extractAmountsFromTexts(texts) {
 }
 
 // Takes pre-fetched document texts (not URLs) — call after fetching once in scrapeTenderDetail.
-// Direct EMD exemption extraction — no Gemini needed for clear-text patterns.
-// Returns a result string or null (→ caller should then try Gemini).
-// IMPORTANT: MSE/MSME patterns require EMD to appear in the SAME sentence to avoid
-// accidentally matching MSME relaxation clauses for turnover/experience.
+// Direct EMD exemption extraction — returns actual document text or null (→ try Gemini).
+// All patterns return the EXACT sentence/phrase from the document, not a hardcoded string.
+// MSE/MSME patterns REQUIRE all three: MSE keyword + EMD keyword + exempt/waived keyword
+// in the same sentence, to avoid false matches on MSME relaxation for turnover/experience.
 function extractEmdExemptionDirect(snippet) {
   if (!snippet) return null;
 
-  // 1. EMD not required / nil / waived
-  if (
-    /\bemd\b[^.\n]{0,80}(?:required|applicable|waived)\b[^.\n]{0,40}\b(?:no|nil|not|zero)\b/i.test(snippet) ||
-    /\b(?:no|nil)\b[^.\n]{0,40}\bemd\b[^.\n]{0,40}\b(?:required|applicable)\b/i.test(snippet) ||
-    /\bemd\b[^.\n]{0,30}[:\-]\s*(?:nil|zero|0\b)/i.test(snippet) ||
-    /\bno\s+emd\b[^.\n]{0,40}(?:required|applicable|charged|payable)/i.test(snippet) ||
-    /earnest\s+money\b[^.\n]{0,80}\b(?:nil|not\s+required|not\s+applicable|waived|exempted)\b/i.test(snippet) ||
-    /\bemd\s+amount\b[^.\n]{0,30}[:\-]\s*(?:nil|zero|0\b)/i.test(snippet) ||
-    /\bno\s+earnest\s+money\b/i.test(snippet)
-  ) {
-    return 'EMD not required';
+  // 1. Structured table field "EMD Required: No" / "EMD: Nil" / "Earnest Money: Nil"
+  //    Requires a colon/dash separator between the field name and the value.
+  const nilPats = [
+    /\bemd\s+(?:amount\s*)?(?:required|applicable|payable)\s*[:\-=]\s*(?:no|nil|not\s+(?:applicable|required|payable))\b[^\n]*/i,
+    /\bearnest\s+money(?:\s+deposit)?\s*[:\-=]\s*(?:nil|zero|not\s+(?:required|applicable))\b[^\n]*/i,
+    /\bemd\s*[:\-=]\s*(?:nil|zero|₹\s*0|rs\.?\s*0)\b[^\n]*/i,
+    /\bemd\s+amount\s*[:\-=]\s*(?:nil|zero|₹?\s*0|rs\.?\s*0)\b[^\n]*/i,
+    /\bno\s+emd\s+(?:is\s+)?(?:required|applicable|charged|payable)\b[^\n]*/i,
+  ];
+  for (const pat of nilPats) {
+    const m = snippet.match(pat);
+    if (m) return m[0].trim().slice(0, 200);
   }
 
-  // 2. Explicit "EMD Exemption: <text>" field
+  // 2. Explicit "EMD Exemption: <text>" or "Earnest Money Exemption: <text>" field
   const field = snippet.match(
     /(?:emd|earnest\s+money(?:\s+deposit)?)\s+exemption\s*[:\-]\s*([^\n]{20,400})/i
   );
   if (field) return field[1].trim().slice(0, 300);
 
-  // 3. MSE/MSME/NSIC/Udyam clause where EMD is in the SAME sentence
-  //    Pattern must contain BOTH an MSE-family keyword AND an EMD/earnest-money keyword within one sentence.
+  // 3. MSE/MSME/NSIC/Udyam exemption — ALL THREE must appear in one sentence:
+  //    (a) MSE-family keyword  (b) EMD keyword  (c) exempt/waived/not-required keyword
+  //    This prevents matching "MSE bidders must pay EMD" (no exempt keyword).
+  const EXEMPT_KW = '(?:exempt|waiv|exemption|not\\s+required|not\\s+applicable)';
+  const MSE_KW    = '(?:mse|msme|nsic|udyam|micro\\s+(?:and\\s+small|enterprise))';
+  const EMD_KW    = '(?:emd|earnest\\s+money)';
   const msePats = [
-    /(?:mse|msme|nsic|udyam)[^.\n]{0,200}(?:emd|earnest\s+money)[^.\n]*\./i,
-    /(?:emd|earnest\s+money)[^.\n]{0,200}(?:mse|msme|nsic|udyam)[^.\n]*\./i,
+    new RegExp(`${MSE_KW}[^.\\n]{0,120}${EXEMPT_KW}[^.\\n]{0,120}${EMD_KW}[^.\\n]*\\.`, 'i'),
+    new RegExp(`${MSE_KW}[^.\\n]{0,120}${EMD_KW}[^.\\n]{0,120}${EXEMPT_KW}[^.\\n]*\\.`, 'i'),
+    new RegExp(`${EMD_KW}[^.\\n]{0,120}${EXEMPT_KW}[^.\\n]{0,120}${MSE_KW}[^.\\n]*\\.`, 'i'),
+    new RegExp(`${EXEMPT_KW}[^.\\n]{0,120}${MSE_KW}[^.\\n]{0,120}${EMD_KW}[^.\\n]*\\.`, 'i'),
   ];
   for (const pat of msePats) {
     const m = snippet.match(pat);
     if (m) return m[0].trim().slice(0, 300);
   }
 
-  // 4. Registered-under + exemption sentence with EMD in same sentence
-  const regPat = /registered\s+under\s+(?:msme|msmed|mse)[^.\n]{0,150}(?:emd|earnest\s+money)[^.\n]*\./i;
-  const regM = snippet.match(regPat);
-  if (regM) return regM[0].trim().slice(0, 300);
+  // 4. "registered under MSME/NSIC + exempt + EMD" in same sentence
+  const regPats = [
+    /registered\s+under\s+(?:msme|msmed|mse|msmed?\s+act)[^.\n]{0,120}(?:exempt|waiv|not\s+required)[^.\n]{0,80}(?:emd|earnest)[^.\n]*\./i,
+    /(?:emd|earnest)[^.\n]{0,80}(?:exempt|waiv|not\s+required)[^.\n]{0,120}registered\s+under\s+(?:msme|msmed|mse)[^.\n]*\./i,
+  ];
+  for (const pat of regPats) {
+    const m = snippet.match(pat);
+    if (m) return m[0].trim().slice(0, 300);
+  }
 
   return null; // no direct match — caller should try Gemini
 }
@@ -369,16 +381,9 @@ Excerpt:`;
   const result = await callGemini(snippet, prompt, apiKeyOverride);
   if (result) return result;
 
-  // Last-resort fallbacks (Gemini also failed)
-  if (/emd[^.]{0,120}required[^.]{0,30}no\b/i.test(snippet) ||
-      /required[^.]{0,30}no\b[^.]{0,120}emd/i.test(snippet)) {
-    return 'EMD not required';
-  }
-  const fallback =
-    snippet.match(/Under\s+(?:the\s+)?MSE\s+category[^.]+\.[^.]*Traders[^.]+\./i)?.[0] ||
-    snippet.match(/Under\s+(?:the\s+)?MSE\s+category[^.]+\./i)?.[0] ||
-    snippet.match(/EMD\s+EXEMPTION\s*:\s*(?:The\s+bidder[^.]+\.\s*)?([^/\n]{20,300})/i)?.[1];
-  return fallback ? fallback.trim() : 'N/A';
+  // Last-resort: same tight patterns as extractEmdExemptionDirect (already returned null above,
+  // so these won't match, but kept as safety net). Default to 'N/A' → EMD Exempt? = No (safe default).
+  return 'N/A';
 }
 
 // ── Google Drive / Sheets upload (optional)
@@ -976,10 +981,10 @@ async function buildExcel(sections) {
       ws.addConditionalFormatting({
         ref: `${exCol}2:${exCol}${maxRow}`,
         rules: [
-          { type: 'expression', formulae: [`$${exCol}2="Yes"`], priority: 300,
+          { type: 'expression', formulae: [`$${exCol}2="Yes"`], priority: 1,
             style: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF2E7D32' } },
                      font: { name: 'Calibri', size: 9, bold: true, color: { argb: 'FFFFFFFF' } } } },
-          { type: 'expression', formulae: [`$${exCol}2="No"`], priority: 301,
+          { type: 'expression', formulae: [`$${exCol}2="No"`], priority: 2,
             style: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFC62828' } },
                      font: { name: 'Calibri', size: 9, bold: true, color: { argb: 'FFFFFFFF' } } } },
         ],
@@ -1025,10 +1030,10 @@ async function buildExcel(sections) {
         ws.addConditionalFormatting({
           ref: `A2:A${maxRow}`,
           rules: [
-            { type: 'expression', formulae: ['$A2="Yes"'], priority: 300,
+            { type: 'expression', formulae: ['$A2="Yes"'], priority: 1,
               style: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF2E7D32' } },
                        font: { name: 'Calibri', size: 9, bold: true, color: { argb: 'FFFFFFFF' } } } },
-            { type: 'expression', formulae: ['$A2="No"'],  priority: 301,
+            { type: 'expression', formulae: ['$A2="No"'],  priority: 2,
               style: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFC62828' } },
                        font: { name: 'Calibri', size: 9, bold: true, color: { argb: 'FFFFFFFF' } } } },
           ],
