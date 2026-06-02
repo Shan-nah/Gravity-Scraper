@@ -307,6 +307,14 @@ function extractAmountsFromTexts(texts) {
 function extractEmdExemptionDirect(snippet) {
   if (!snippet) return null;
 
+  // 0. HIGHEST PRIORITY: explicit "EMD Exemption Allowed/Applicable: No" table field
+  //    This overrides any general MSE boilerplate text elsewhere in the document.
+  //    e.g. "EMD Exemption Allowed  No"  or  "EMD Exemption Applicable: No"
+  const noExemptionField = snippet.match(
+    /\bemd\s+exemption\s+(?:allowed|applicable|available|required)\b[^:\-\n]{0,10}[:\-=]?\s*(?:no|nil|not\s+(?:allowed|applicable|available))\b[^\n]*/i
+  );
+  if (noExemptionField) return 'No exemption mentioned';
+
   // 1. Structured table field "EMD Required: No" / "EMD: Nil" / "Earnest Money: Nil"
   //    Requires a colon/dash separator between the field name and the value.
   const nilPats = [
@@ -1267,7 +1275,8 @@ async function scrapeTenderDetail(viewLink, geminiKey, listingTdrid = null) {
       'State': record['State'] || 'N/A',
       'Document Fees': record['Document Fees'] || 'N/A',
       'EMD': emdAmount,
-      'EMD Exempt?': /^(no exemption mentioned|n\/a)$/i.test(emdExemption.trim()) ? 'No' : 'Yes',
+      'EMD Exempt?': (/^(no exemption mentioned|n\/a)$/i.test(emdExemption.trim()) ||
+                     /\bemd\s+exemption\s+(?:allowed|applicable|available|required)\b[^:\-\n]{0,10}[:\-=]?\s*(?:no|nil|not\s+(?:allowed|applicable|available))\b/i.test(emdExemption)) ? 'No' : 'Yes',
       'EMD Exemption': emdExemption,
       'Tender Value': tenderValue,
       'Tender Type': record['Tender Type'] || 'N/A',
