@@ -710,8 +710,8 @@ function fillDataSheet(ws, cols, rows, tabArgb, headerColor) {
         {
           type: 'cellIs', operator: 'equal', formulae: ['"No"'], priority: 4,
           style: {
-            fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFB0BEC5' } },
-            font: { name: 'Calibri', size: 10, bold: true, color: { argb: 'FF37474F' } }
+            fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFC62828' } },
+            font: { name: 'Calibri', size: 10, bold: true, color: { argb: 'FFFFFFFF' } }
           }
         },
       ],
@@ -835,7 +835,10 @@ async function buildExcel(sections) {
 
     const inputOffset = inputColDefs.length;  // 0 or 3
 
-    ws.columns = allSheetCols.map(c => ({ header: c.label, key: c.key, width: c.width }));
+    ws.columns = allSheetCols.map(c => ({
+      header: c.label, key: c.key, width: c.width,
+      style: { font: { name: 'Calibri', size: 9, color: { argb: 'FF000000' } }, alignment: { vertical: 'top', wrapText: false } },
+    }));
     const hdr  = ws.getRow(1);
     hdr.values = allSheetCols.map(c => c.label);
     headerStyle(hdr, hdrHex, totalColCount);
@@ -916,19 +919,19 @@ async function buildExcel(sections) {
       }
     }
 
-    // EMD Exempt? column — Yes=green, No=light grey (matches All Sections styling)
+    // EMD Exempt? column — Yes=green, No=red
     const emdExemptPos = allSheetCols.findIndex(c => c.key === 'EMD Exempt?');
     if (emdExemptPos >= 0) {
       const exCol = colNumToLetter(emdExemptPos + 1);
       ws.addConditionalFormatting({
         ref: `${exCol}2:${exCol}${maxRow}`,
         rules: [
-          { type: 'cellIs', operator: 'equal', formulae: ['"Yes"'], priority: 3,
+          { type: 'cellIs', operator: 'equal', formulae: ['"Yes"'], priority: 1,
             style: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF2E7D32' } },
-                     font: { name: 'Calibri', size: 10, bold: true, color: { argb: 'FFFFFFFF' } } } },
-          { type: 'cellIs', operator: 'equal', formulae: ['"No"'], priority: 4,
-            style: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFB0BEC5' } },
-                     font: { name: 'Calibri', size: 10, bold: true, color: { argb: 'FF37474F' } } } },
+                     font: { name: 'Calibri', size: 9, bold: true, color: { argb: 'FFFFFFFF' } } } },
+          { type: 'cellIs', operator: 'equal', formulae: ['"No"'], priority: 2,
+            style: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFC62828' } },
+                     font: { name: 'Calibri', size: 9, bold: true, color: { argb: 'FFFFFFFF' } } } },
         ],
       });
     }
@@ -971,10 +974,12 @@ async function buildExcel(sections) {
         ws.addConditionalFormatting({
           ref: `A2:A${maxRow}`,
           rules: [
-            { type: 'containsText', operator: 'containsText', text: 'Yes', priority: 48,
-              style: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFA5D6A7' } }, font: { bold: true } } },
-            { type: 'containsText', operator: 'containsText', text: 'No',  priority: 49,
-              style: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEF9A9A' } }, font: { bold: true } } },
+            { type: 'cellIs', operator: 'equal', formulae: ['"Yes"'], priority: 1,
+              style: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF2E7D32' } },
+                       font: { name: 'Calibri', size: 9, bold: true, color: { argb: 'FFFFFFFF' } } } },
+            { type: 'cellIs', operator: 'equal', formulae: ['"No"'],  priority: 2,
+              style: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFC62828' } },
+                       font: { name: 'Calibri', size: 9, bold: true, color: { argb: 'FFFFFFFF' } } } },
           ],
         });
       }
@@ -1137,8 +1142,8 @@ async function scrapeTenderDetail(viewLink, geminiKey) {
               if (!docLinks.includes(href)) docLinks.push(href);
             }
           });
-        } else if (label && value && label.length < 80) {
-          record[label] = value;
+        } else if (label && value && label.length < 80 && !(label in record)) {
+          record[label] = value;  // first occurrence wins — prevents related-tender tables overwriting main fields
         }
       }
     });
