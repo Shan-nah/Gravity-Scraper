@@ -300,6 +300,51 @@ function extractAmountsFromTexts(texts) {
 }
 
 // Takes pre-fetched document texts (not URLs) — call after fetching once in scrapeTenderDetail.
+// Direct EMD exemption extraction — no Gemini needed for clear-text patterns.
+// Returns a result string or null (→ caller should then try Gemini).
+// IMPORTANT: MSE/MSME patterns require EMD to appear in the SAME sentence to avoid
+// accidentally matching MSME relaxation clauses for turnover/experience.
+function extractEmdExemptionDirect(snippet) {
+  if (!snippet) return null;
+
+  // 1. EMD not required / nil / waived
+  if (
+    /\bemd\b[^.\n]{0,80}(?:required|applicable|waived)\b[^.\n]{0,40}\b(?:no|nil|not|zero)\b/i.test(snippet) ||
+    /\b(?:no|nil)\b[^.\n]{0,40}\bemd\b[^.\n]{0,40}\b(?:required|applicable)\b/i.test(snippet) ||
+    /\bemd\b[^.\n]{0,30}[:\-]\s*(?:nil|zero|0\b)/i.test(snippet) ||
+    /\bno\s+emd\b[^.\n]{0,40}(?:required|applicable|charged|payable)/i.test(snippet) ||
+    /earnest\s+money\b[^.\n]{0,80}\b(?:nil|not\s+required|not\s+applicable|waived|exempted)\b/i.test(snippet) ||
+    /\bemd\s+amount\b[^.\n]{0,30}[:\-]\s*(?:nil|zero|0\b)/i.test(snippet) ||
+    /\bno\s+earnest\s+money\b/i.test(snippet)
+  ) {
+    return 'EMD not required';
+  }
+
+  // 2. Explicit "EMD Exemption: <text>" field
+  const field = snippet.match(
+    /(?:emd|earnest\s+money(?:\s+deposit)?)\s+exemption\s*[:\-]\s*([^\n]{20,400})/i
+  );
+  if (field) return field[1].trim().slice(0, 300);
+
+  // 3. MSE/MSME/NSIC/Udyam clause where EMD is in the SAME sentence
+  //    Pattern must contain BOTH an MSE-family keyword AND an EMD/earnest-money keyword within one sentence.
+  const msePats = [
+    /(?:mse|msme|nsic|udyam)[^.\n]{0,200}(?:emd|earnest\s+money)[^.\n]*\./i,
+    /(?:emd|earnest\s+money)[^.\n]{0,200}(?:mse|msme|nsic|udyam)[^.\n]*\./i,
+  ];
+  for (const pat of msePats) {
+    const m = snippet.match(pat);
+    if (m) return m[0].trim().slice(0, 300);
+  }
+
+  // 4. Registered-under + exemption sentence with EMD in same sentence
+  const regPat = /registered\s+under\s+(?:msme|msmed|mse)[^.\n]{0,150}(?:emd|earnest\s+money)[^.\n]*\./i;
+  const regM = snippet.match(regPat);
+  if (regM) return regM[0].trim().slice(0, 300);
+
+  return null; // no direct match — caller should try Gemini
+}
+
 async function extractEmdExemptionFromTexts(docTexts, apiKeyOverride) {
   let snippet = null;
   for (const text of docTexts) {
@@ -310,6 +355,11 @@ async function extractEmdExemptionFromTexts(docTexts, apiKeyOverride) {
 
   if (!snippet) { console.log('  No EMD snippet in docs'); return 'No exemption mentioned'; }
 
+  // Try direct pattern extraction first — covers most tenders without Gemini
+  const direct = extractEmdExemptionDirect(snippet);
+  if (direct) { console.log('  EMD extracted directly (no Gemini)'); return direct; }
+
+  // No Gemini keys at all → return raw snippet as fallback
   if (!geminiApiKeys.length && !apiKeyOverride) return snippet.trim();
 
   const prompt = `From this tender document excerpt, state exactly who is exempt from paying EMD (Earnest Money Deposit). Use the exact wording from the document. 1-2 sentences only. If no EMD exemption is mentioned, respond: No exemption mentioned
@@ -319,12 +369,11 @@ Excerpt:`;
   const result = await callGemini(snippet, prompt, apiKeyOverride);
   if (result) return result;
 
-  // Direct "EMD not required" signal — no Gemini interpretation needed
+  // Last-resort fallbacks (Gemini also failed)
   if (/emd[^.]{0,120}required[^.]{0,30}no\b/i.test(snippet) ||
       /required[^.]{0,30}no\b[^.]{0,120}emd/i.test(snippet)) {
     return 'EMD not required';
   }
-
   const fallback =
     snippet.match(/Under\s+(?:the\s+)?MSE\s+category[^.]+\.[^.]*Traders[^.]+\./i)?.[0] ||
     snippet.match(/Under\s+(?:the\s+)?MSE\s+category[^.]+\./i)?.[0] ||
@@ -920,16 +969,17 @@ async function buildExcel(sections) {
     }
 
     // EMD Exempt? column — Yes=green, No=red
+    // Use expression type (not cellIs) so CF applies to FILTER formula output cells in Google Sheets
     const emdExemptPos = allSheetCols.findIndex(c => c.key === 'EMD Exempt?');
     if (emdExemptPos >= 0) {
       const exCol = colNumToLetter(emdExemptPos + 1);
       ws.addConditionalFormatting({
         ref: `${exCol}2:${exCol}${maxRow}`,
         rules: [
-          { type: 'cellIs', operator: 'equal', formulae: ['"Yes"'], priority: 1,
+          { type: 'expression', formulae: [`$${exCol}2="Yes"`], priority: 300,
             style: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF2E7D32' } },
                      font: { name: 'Calibri', size: 9, bold: true, color: { argb: 'FFFFFFFF' } } } },
-          { type: 'cellIs', operator: 'equal', formulae: ['"No"'], priority: 2,
+          { type: 'expression', formulae: [`$${exCol}2="No"`], priority: 301,
             style: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFC62828' } },
                      font: { name: 'Calibri', size: 9, bold: true, color: { argb: 'FFFFFFFF' } } } },
         ],
@@ -971,13 +1021,14 @@ async function buildExcel(sections) {
           `"Yes","No"))))` };
 
         // Green for Yes, red for No in col A
+        // Use expression type so CF works on BYROW formula output cells in Google Sheets
         ws.addConditionalFormatting({
           ref: `A2:A${maxRow}`,
           rules: [
-            { type: 'cellIs', operator: 'equal', formulae: ['"Yes"'], priority: 1,
+            { type: 'expression', formulae: ['$A2="Yes"'], priority: 300,
               style: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF2E7D32' } },
                        font: { name: 'Calibri', size: 9, bold: true, color: { argb: 'FFFFFFFF' } } } },
-            { type: 'cellIs', operator: 'equal', formulae: ['"No"'],  priority: 2,
+            { type: 'expression', formulae: ['$A2="No"'],  priority: 301,
               style: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFC62828' } },
                        font: { name: 'Calibri', size: 9, bold: true, color: { argb: 'FFFFFFFF' } } } },
           ],
