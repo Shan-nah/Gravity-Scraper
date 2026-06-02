@@ -1364,34 +1364,60 @@ app.get('/download/:token', (req, res) => {
   res.sendFile(filePath);
 });
 
-// ── Diagnostic: generate Excel with hardcoded data to test generation ──────
+// ── Diagnostic: scrape 3 real tenders from any URL and generate Excel ───────
 app.get('/test-excel', async (req, res) => {
-  const testData = [{
-    section: 'Test Section',
-    tenders: [{
-      'Company': '', 'Important': false, 'Filled Date': '', 'Filled By': '', 'Bid Status': '',
-      'TDR': 'TEST-001', 'Tender No': 'TND/TEST/2026/001',
-      'Tendering Authority': 'Test Authority',
-      'Tender Brief': 'This is a test tender brief - if you see this text, Excel generation works',
-      'City': 'Delhi', 'State': 'Delhi',
-      'Document Fees': '500', 'EMD': 25000,
-      'EMD Exempt?': 'No', 'EMD Exemption': 'N/A',
-      'Tender Value': 1000000, 'Tender Type': 'Open Tender',
-      'Bidding Type': 'Item Rate', 'Competition Type': 'Open',
-      'Publish Date': '01-06-2026', 'Last Date of Bid Submission': '20-06-2026',
-      'Tender Opening Date': '21-06-2026', 'Address': 'New Delhi - 110001',
-      'Information Source': 'Test Source',
-      'View Link': 'https://www.tenderdetail.com/test',
-      'Additional Details': 'Test additional details',
-    }]
-  }];
+  const testUrl = req.query.url || null;
+  let testData;
+  if (testUrl && validateUrl(testUrl)) {
+    try {
+      const { data } = await axios.get(testUrl, { headers: HEADERS, timeout: 20000 });
+      const $ = cheerio.load(data);
+      const sections = parseDailyDigest($);
+      // Take first 3 tenders from each section (max 3 sections)
+      const mini = sections.slice(0, 3).map(s => ({
+        section: s.section,
+        tenders: s.tenders.slice(0, 3),
+      }));
+      const enriched = [];
+      for (const sec of mini) {
+        const records = await Promise.all(
+          sec.tenders.map(t => scrapeTenderDetail(t.viewLink))
+        );
+        enriched.push({ section: sec.section, tenders: records });
+      }
+      testData = enriched;
+    } catch (e) {
+      return res.status(500).send('Scrape error: ' + e.message);
+    }
+  } else {
+    testData = [{
+      section: 'Test Section',
+      tenders: [{
+        'Company': '', 'Important': false, 'Filled Date': '', 'Filled By': '', 'Bid Status': '',
+        'TDR': 'TEST-001', 'Tender No': 'TND/TEST/2026/001',
+        'Tendering Authority': 'Test Authority',
+        'Tender Brief': 'This is a test tender brief - if you see this text Excel generation works',
+        'City': 'Delhi', 'State': 'Delhi',
+        'Document Fees': '500', 'EMD': 25000,
+        'EMD Exempt?': 'No', 'EMD Exemption': 'N/A',
+        'Tender Value': 1000000, 'Tender Type': 'Open Tender',
+        'Bidding Type': 'Item Rate', 'Competition Type': 'Open',
+        'Publish Date': '01-06-2026', 'Last Date of Bid Submission': '20-06-2026',
+        'Tender Opening Date': '21-06-2026', 'Address': 'New Delhi - 110001',
+        'Information Source': 'Test Source',
+        'View Link': 'https://www.tenderdetail.com/test',
+        'Additional Details': 'Test additional details',
+      }]
+    }];
+  }
   try {
     const buf = await buildExcel(testData);
-    res.setHeader('Content-Disposition', 'attachment; filename="test_excel.xlsx"');
+    const n = testData.reduce((s, sec) => s + sec.tenders.length, 0);
+    res.setHeader('Content-Disposition', `attachment; filename="test_${n}_tenders.xlsx"`);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.send(buf);
   } catch (e) {
-    res.status(500).send('buildExcel error: ' + e.message);
+    res.status(500).send('buildExcel error: ' + e.message + '\n' + e.stack);
   }
 });
 
