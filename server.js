@@ -376,7 +376,7 @@ async function uploadToGoogleSheets(xlsxBuffer, title) {
   try {
     const response = await axios.post(scriptUrl, {
       base64: xlsxBuffer.toString('base64'),
-      filename: (title || 'Tender Data') + '.xlsx'
+      filename: title || 'Tender Data'
     }, { timeout: 30000 });
 
     if (response.data && response.data.url) {
@@ -536,7 +536,7 @@ function dataRowStyle(row, rowIdx, colCount) {
   for (let c = 1; c <= colCount; c++) {
     const cell = row.getCell(c);
     cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bg } };
-    cell.font = { name: 'Calibri', size: 10 };
+    cell.font = { name: 'Calibri', size: 10, color: { argb: 'FF000000' } };
     cell.alignment = { vertical: 'top', wrapText: false };
     cell.border = {
       top: { style: 'hair', color: { argb: 'FFCCE0F5' } },
@@ -637,7 +637,7 @@ function fillDataSheet(ws, cols, rows, tabArgb, headerColor) {
     // Bid Document Details — monospace so pipe-delimited columns line up
     if (bidIdx >= 0) {
       const cell = row.getCell(bidIdx + 1);
-      cell.font = { name: 'Consolas', size: 9 };
+      cell.font = { name: 'Consolas', size: 9, color: { argb: 'FF000000' } };
       cell.alignment = { vertical: 'middle', wrapText: false, horizontal: 'left' };
     }
 
@@ -653,7 +653,7 @@ function fillDataSheet(ws, cols, rows, tabArgb, headerColor) {
     if (emdExemptIdx >= 0) {
       const cell = row.getCell(emdExemptIdx + 1);
       cell.alignment = { vertical: 'middle', horizontal: 'center' };
-      cell.font = { name: 'Calibri', size: 10, bold: true };
+      cell.font = { name: 'Calibri', size: 10, bold: true, color: { argb: 'FF000000' } };
     }
   });
 
@@ -821,7 +821,7 @@ async function buildExcel(sections) {
         ? masterCols.filter(function(c) { return c.key !== 'Company' && c.key !== 'Important'; })
         : name === 'Filled'
           ? masterCols.map(function(c) { return c.key === 'Company' ? Object.assign({}, c, { width: 32 }) : c; })
-          : masterCols;
+          : masterCols.filter(function(c) { return c.key !== 'Company' && c.key !== 'Important'; });
     const displayColCount = displayCols.length;
 
     const allSheetCols  = [...inputColDefs, ...displayCols];
@@ -830,11 +830,7 @@ async function buildExcel(sections) {
 
     const inputOffset = inputColDefs.length;  // 0 or 3
 
-    ws.properties.defaultRowHeight = 18;
-    ws.columns = allSheetCols.map(c => ({
-      header: c.label, key: c.key, width: c.width,
-      style: { font: { name: 'Calibri', size: 10 }, alignment: { vertical: 'top', wrapText: false } },
-    }));
+    ws.columns = allSheetCols.map(c => ({ header: c.label, key: c.key, width: c.width }));
     const hdr  = ws.getRow(1);
     hdr.values = allSheetCols.map(c => c.label);
     headerStyle(hdr, hdrHex, totalColCount);
@@ -862,7 +858,7 @@ async function buildExcel(sections) {
     if (name === 'Corrigendum') {
       const sectionRange = `'All Sections'!$${sColLetter}$2:$${sColLetter}$${maxRow}`;
       const briefRange   = `'All Sections'!$${bColLetter}$2:$${bColLetter}$${maxRow}`;
-      filterFormula = `IFERROR(FILTER(${src},(ISNUMBER(SEARCH("corrigendum",${sectionRange})))+(ISNUMBER(SEARCH("corrigendum",${briefRange})))>0),IF(ROWS(A2:A2)=1,"No Corrigendum tenders found",""))`;
+      filterFormula = `IFERROR(CHOOSECOLS(FILTER(${src},(ISNUMBER(SEARCH("corrigendum",${sectionRange})))+(ISNUMBER(SEARCH("corrigendum",${briefRange})))>0),${impColSeq}),IF(ROWS(A2:A2)=1,"No Corrigendum tenders found",""))`;
     } else if (name === 'Important') {
       // Filter Important=TRUE rows, strip Company (col1) + Important (col2) from output via CHOOSECOLS
       // Formula placed at C2 (col A = Filled?, col B = Company)
@@ -872,7 +868,7 @@ async function buildExcel(sections) {
       const cond = `ISNUMBER(SEARCH("${filterValue}",${critRange}))`;
       filterFormula = `IFERROR(FILTER(${src},${cond}),${emptyRow})`;
     } else {
-      filterFormula = `IFERROR(FILTER(${src},ISNUMBER(SEARCH("${filterValue}",${critRange}))),IF(ROWS(A2:A2)=1,"No tenders assigned to ${name}",""))`;
+      filterFormula = `IFERROR(CHOOSECOLS(FILTER(${src},ISNUMBER(SEARCH("${filterValue}",${critRange}))),${impColSeq}),IF(ROWS(A2:A2)=1,"No tenders assigned to ${name}",""))`;
     }
 
     // Place formula: C2 for company sheets (cols A-B are the editable input cols), A2 otherwise
@@ -1366,6 +1362,37 @@ app.get('/download/:token', (req, res) => {
   res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   res.sendFile(filePath);
+});
+
+// ── Diagnostic: generate Excel with hardcoded data to test generation ──────
+app.get('/test-excel', async (req, res) => {
+  const testData = [{
+    section: 'Test Section',
+    tenders: [{
+      'Company': '', 'Important': false, 'Filled Date': '', 'Filled By': '', 'Bid Status': '',
+      'TDR': 'TEST-001', 'Tender No': 'TND/TEST/2026/001',
+      'Tendering Authority': 'Test Authority',
+      'Tender Brief': 'This is a test tender brief - if you see this text, Excel generation works',
+      'City': 'Delhi', 'State': 'Delhi',
+      'Document Fees': '500', 'EMD': 25000,
+      'EMD Exempt?': 'No', 'EMD Exemption': 'N/A',
+      'Tender Value': 1000000, 'Tender Type': 'Open Tender',
+      'Bidding Type': 'Item Rate', 'Competition Type': 'Open',
+      'Publish Date': '01-06-2026', 'Last Date of Bid Submission': '20-06-2026',
+      'Tender Opening Date': '21-06-2026', 'Address': 'New Delhi - 110001',
+      'Information Source': 'Test Source',
+      'View Link': 'https://www.tenderdetail.com/test',
+      'Additional Details': 'Test additional details',
+    }]
+  }];
+  try {
+    const buf = await buildExcel(testData);
+    res.setHeader('Content-Disposition', 'attachment; filename="test_excel.xlsx"');
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.send(buf);
+  } catch (e) {
+    res.status(500).send('buildExcel error: ' + e.message);
+  }
 });
 
 // ══════════════════════════════════════════════════════════════
