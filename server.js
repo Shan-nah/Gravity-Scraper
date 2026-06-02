@@ -1162,10 +1162,14 @@ async function scrapeTenderDetail(viewLink, geminiKey) {
 
     console.log(`[${record['TDR'] || viewLink}] docLinks found: ${docLinks.length}`, docLinks.slice(0, 3));
 
-    // Collect every detail-page field that is not already in a dedicated column
+    // Collect every detail-page field that is not already in a dedicated column.
+    // Cap at 30 entries to prevent BOQ/related-tender tables from creating 100KB+ cells.
     const additionalLines = [];
     for (const [k, v] of Object.entries(record)) {
-      if (!MAPPED_KEYS.has(k)) additionalLines.push(`${k}: ${v}`);
+      if (!MAPPED_KEYS.has(k)) {
+        additionalLines.push(`${k}: ${v}`);
+        if (additionalLines.length >= 30) break;
+      }
     }
 
     // Pick only the UUID-matching NIT document (or ≤3 fallback), fetch once, reuse for everything
