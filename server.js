@@ -1264,7 +1264,7 @@ async function scrapeTenderDetail(viewLink, geminiKey, listingTdrid = null, list
     const targetLinks = pickTargetDocLinks(viewLink, docLinks);
     const docTexts    = targetLinks.length ? await Promise.all(targetLinks.map(link => fetchDocText(link))) : [];
 
-    const emdExemption = await extractEmdExemptionFromTexts(docTexts, geminiKey);
+    let emdExemption = await extractEmdExemptionFromTexts(docTexts, geminiKey);
 
     // Use HTML-scraped values; fill from doc text if HTML only says "refer document"
     let emdAmount   = normalizeAmount(record['EMD']);
@@ -1273,6 +1273,19 @@ async function scrapeTenderDetail(viewLink, geminiKey, listingTdrid = null, list
       const amounts = extractAmountsFromTexts(docTexts);
       if (needsDocLookup(emdAmount)   && amounts.emd !== null) emdAmount   = amounts.emd;
       if (needsDocLookup(tenderValue) && amounts.tv  !== null) tenderValue = amounts.tv;
+    }
+
+    // Cross-check: HTML table explicitly says EMD is nil/zero/not-required
+    // → force "not required" even if no NIT document was available to confirm
+    const rawHtmlEMD = String(record['EMD'] || '').trim();
+    if (/^(nil|not\s*applicable|not\s*required|exempt|0\.?0*|na|-)\s*$/i.test(rawHtmlEMD) &&
+        /^(no exemption mentioned|n\/a)$/i.test(emdExemption.trim())) {
+      emdExemption = 'EMD not required (nil as per tender notice)';
+    }
+    // If document confirms "not required" but HTML said "Refer document", clean up amount
+    if (/not\s+required|required\s*no|required.*no\b/i.test(emdExemption) &&
+        typeof emdAmount === 'string' && needsDocLookup(emdAmount)) {
+      emdAmount = 'N/A';
     }
 
     return {
