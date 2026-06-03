@@ -307,13 +307,34 @@ function extractAmountsFromTexts(texts) {
 function extractEmdExemptionDirect(snippet) {
   if (!snippet) return null;
 
-  // 0. HIGHEST PRIORITY: explicit "EMD Exemption Allowed/Applicable: No" table field
-  //    This overrides any general MSE boilerplate text elsewhere in the document.
-  //    e.g. "EMD Exemption Allowed  No"  or  "EMD Exemption Applicable: No"
+  // 0a. HIGHEST PRIORITY: explicit "EMD Exemption Allowed/Applicable: No" table field
+  //     This overrides any general MSE boilerplate text elsewhere in the document.
   const noExemptionField = snippet.match(
     /\bemd\s+exemption\s+(?:allowed|applicable|available|required)\b[^:\-\n]{0,10}[:\-=]?\s*(?:no|nil|not\s+(?:allowed|applicable|available))\b[^\n]*/i
   );
   if (noExemptionField) return 'No exemption mentioned';
+
+  // 0b. "EMD Exemption Allowed/Applicable: Yes" — exemption IS explicitly allowed
+  //     Return the actual document text so the reason is visible in the sheet.
+  const yesExemptionField = snippet.match(
+    /\bemd\s+exemption\s+(?:allowed|applicable|available)\b[^:\-\n]{0,10}[:\-=]?\s*(?:yes|applicable|allowed)\b[^\n]*/i
+  );
+  if (yesExemptionField) return yesExemptionField[0].trim().slice(0, 200);
+
+  // 0c. Hindi/bilingual "आवश्यकता/Required: No" in EMD Detail context.
+  //     pdftotext of bilingual EMD Detail table: "ईएमडी विवरण/EMD Detail … आवश्यकता/Required  No"
+  //     The snippet is EMD-specific so "Required: No" here means EMD Required = No.
+  //     Require Hindi "आवश्यकता" OR that "EMD" appears within 3 lines before "Required".
+  const hindiReqNo = snippet.match(
+    /आवश्यकता\s*(?:[\/\\]\s*required)?\s*[:\-]?\s*no\b[^\n]*/i
+  );
+  if (hindiReqNo) return hindiReqNo[0].trim().slice(0, 200);
+
+  // Also catch "Required No" directly after EMD Detail header (same or next line)
+  const emdDetailReqNo = snippet.match(
+    /(?:ईएमडी\s*विवरण|emd\s+detail)[^\n]{0,100}(?:\n[^\n]{0,60})?(?:\bRequired\b)\s*[:\-]?\s*No\b[^\n]*/i
+  );
+  if (emdDetailReqNo) return emdDetailReqNo[0].trim().slice(0, 200);
 
   // 1. Structured table field "EMD Required: No" / "EMD: Nil" / "Earnest Money: Nil"
   //    Requires a colon/dash separator between the field name and the value.
