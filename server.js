@@ -324,10 +324,15 @@ function extractEmdExemptionDirect(snippet) {
   // 0c. Hindi/bilingual "Required: No" in EMD Detail context.
   //     pdftotext collapses all whitespace AND renders "आवश्यकता" as "आव यकता" (broken conjunct).
   //     After collapse: "EMD Detail आव यकता/Required No" — all on one line with spaces.
-  const hindiReqNo = snippet.match(
-    /(?:आव\s*यकता|आवश्यकता)\s*[\/\\]?\s*(?:required)?\s*[:\-]?\s*no\b/i
-  );
-  if (hindiReqNo) return (hindiReqNo[0].trim() + ' (EMD not required)').slice(0, 100);
+  const hindiReqPat = /(?:आव\s*यकता|आवश्यकता)\s*[\/\\]?\s*(?:required)?\s*[:\-]?\s*no\b/i;
+  const hindiReqNo = snippet.match(hindiReqPat);
+  if (hindiReqNo) {
+    const matchPos = snippet.search(hindiReqPat);
+    // Guard: if "ePBG" appears BEFORE this match, the "Required No" is for ePBG, not EMD
+    if (!/epbg/i.test(snippet.slice(0, matchPos))) {
+      return (hindiReqNo[0].trim() + ' (EMD not required)').slice(0, 100);
+    }
+  }
 
   // 1. Structured table field "EMD Required: No" / "EMD: Nil" / "Earnest Money: Nil"
   //    Note: pdftotext collapses all whitespace, so multi-line tables become single-line.
@@ -338,10 +343,8 @@ function extractEmdExemptionDirect(snippet) {
     /\bemd\s*[:\-=]\s*(?:nil|zero|₹\s*0|rs\.?\s*0)\b[^\n]*/i,
     /\bemd\s+amount\s*[:\-=]\s*(?:nil|zero|₹?\s*0|rs\.?\s*0)\b[^\n]*/i,
     /\bno\s+emd\s+(?:is\s+)?(?:required|applicable|charged|payable)\b[^\n]*/i,
-    // Bilingual "/Required No" after whitespace collapse: "EMD Detail आव यकता/Required No"
-    /\/required\s*[:\-]?\s*no\b[^\n]*/i,
-    // "EMD Detail" section with "Required No" nearby (whitespace-collapsed pdftotext)
-    /\bemd\s+detail\b[^.]{0,200}\brequired\s+no\b/i,
+    // Note: "/Required No" and "EMD Detail...Required No" patterns were removed because
+    // they also match "ePBG Detail आव यकता/Required No" (ePBG not required ≠ EMD not required)
   ];
   for (const pat of nilPats) {
     const m = snippet.match(pat);
