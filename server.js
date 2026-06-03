@@ -404,7 +404,11 @@ async function extractEmdExemptionFromTexts(docTexts, apiKeyOverride) {
   // No Gemini keys at all → return raw snippet as fallback
   if (!geminiApiKeys.length && !apiKeyOverride) return snippet.trim();
 
-  const prompt = `From this tender document excerpt, state exactly who is exempt from paying EMD (Earnest Money Deposit). Use the exact wording from the document. 1-2 sentences only. If no EMD exemption is mentioned, respond: No exemption mentioned
+  const prompt = `Analyze this tender document excerpt for EMD (Earnest Money Deposit) exemption:
+
+- If EMD is NOT required for this tender (nobody needs to pay EMD): respond exactly: EMD not required
+- If specific bidder categories are exempt from EMD: state exactly who is exempt using the document's wording, 1-2 sentences only
+- If no EMD exemption or waiver is mentioned: respond exactly: No exemption mentioned
 
 Excerpt:`;
 
@@ -1169,9 +1173,13 @@ function parseDailyDigest($) {
       }
     });
 
+    // Extract authority name from listing page — more reliable than detail-page scraping
+    // (detail pages may have related-tender tables that corrupt the authority name)
+    const listingAuthority = clean($el.find('p.m-r-td-title').text()).replace(/^\d+\.\s*/, '').trim() || null;
+
     let viewLink = $row2.find('a').first().attr('href') || null;
     if (viewLink && !viewLink.startsWith('http')) viewLink = `https://www.tenderdetail.com${viewLink}`;
-    if (viewLink) curTenders.push({ tenderId, viewLink });
+    if (viewLink) curTenders.push({ tenderId, viewLink, listingAuthority });
   });
 
   if (curTenders.length > 0) sections.push({ section: curSection || 'All Tenders', tenders: curTenders });
@@ -1191,7 +1199,7 @@ const MAPPED_KEYS = new Set([
   'Last Date of Bid Submission', 'Tender Opening Date', 'Address', 'Information Source',
 ]);
 
-async function scrapeTenderDetail(viewLink, geminiKey, listingTdrid = null) {
+async function scrapeTenderDetail(viewLink, geminiKey, listingTdrid = null, listingAuthority = null) {
   try {
     const { data } = await axios.get(viewLink, { headers: HEADERS, timeout: 15000, maxRedirects: 4 });
     const $ = cheerio.load(data);
@@ -1275,7 +1283,9 @@ async function scrapeTenderDetail(viewLink, geminiKey, listingTdrid = null) {
       'Bid Status': '',
       'TDR': (listingTdrid && listingTdrid !== 'N/A') ? listingTdrid : (record['TDR'] || 'N/A'),
       'Tender No': record['Tender No'] || record['Tender ID'] || 'N/A',
-      'Tendering Authority': record['Tendering Authority'] || record['Company Name'] || 'N/A',
+      'Tendering Authority': (listingAuthority && listingAuthority.length > 2)
+        ? listingAuthority
+        : (record['Tendering Authority'] || record['Company Name'] || 'N/A'),
       'Tender Brief': record['Tender Brief'] || 'N/A',
       'City': record['City'] || 'N/A',
       'State': record['State'] || 'N/A',
@@ -1378,7 +1388,7 @@ app.get('/scrape-deep', async (req, res) => {
 
       const records = await pooledMap(
         sec.tenders,
-        (t) => scrapeTenderDetail(t.viewLink, reqGeminiKey || undefined, t.tenderId),
+        (t) => scrapeTenderDetail(t.viewLink, reqGeminiKey || undefined, t.tenderId, t.listingAuthority),
         CONCURRENCY,
         (sectionDone) => {
           globalDone++;
@@ -1470,7 +1480,7 @@ app.get('/test-excel', async (req, res) => {
       const enriched = [];
       for (const sec of mini) {
         const records = await Promise.all(
-          sec.tenders.map(t => scrapeTenderDetail(t.viewLink, null, t.tenderId))
+          sec.tenders.map(t => scrapeTenderDetail(t.viewLink, null, t.tenderId, t.listingAuthority))
         );
         enriched.push({ section: sec.section, tenders: records });
       }
