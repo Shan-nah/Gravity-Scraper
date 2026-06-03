@@ -947,57 +947,53 @@ async function buildExcel(sections) {
 
     // Do NOT set fixed row heights — Google Sheets auto-sizes rows based on FILTER formula content
 
-    // Zebra stripe
-    ws.addConditionalFormatting({
-      ref: `A2:${totalLastCol}${maxRow}`,
-      rules: [
-        { type: 'expression', formulae: ['MOD(ROW(),2)=0'], priority: 200,
-          style: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEAF4FB' } } } },
-      ],
-    });
+    // ── All conditional formatting in ONE element so Google Sheets honours priority ordering.
+    //    Separate <conditionalFormatting> elements have unpredictable cross-element priority.
+    //    Column-specific rules use COLUMN()=N to target only the relevant column.
+    const cfRules = [];
 
-    // Row highlighting:
-    // • Company sheets: green when Filled checkbox (col A) = TRUE
-    // • All other sheets: yellow when Important checkbox = TRUE (col B in masterCols display)
+    // Zebra stripe — lowest priority (background layer)
+    cfRules.push({ type: 'expression', formulae: ['MOD(ROW(),2)=0'], priority: 200,
+      style: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEAF4FB' } } } });
+
+    // Row highlight — medium priority
     if (options.isCompanySheet) {
-      ws.addConditionalFormatting({
-        ref: `A2:${totalLastCol}${maxRow}`,
-        rules: [
-          { type: 'expression', formulae: ['$A2=TRUE'], priority: 100,
-            style: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFA5D6A7' } } } },
-        ],
-      });
+      cfRules.push({ type: 'expression', formulae: ['$A2=TRUE'], priority: 100,
+        style: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFA5D6A7' } } } });
     } else {
       const impIdx = displayCols.findIndex(function(c) { return c.key === 'Important'; });
       if (impIdx >= 0) {
         const impCF = colNumToLetter(impIdx + 1 + inputOffset);
-        ws.addConditionalFormatting({
-          ref: `A2:${totalLastCol}${maxRow}`,
-          rules: [
-            { type: 'expression', formulae: [`$${impCF}2=TRUE`], priority: 101,
-              style: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF59D' } } } },
-          ],
-        });
+        cfRules.push({ type: 'expression', formulae: [`$${impCF}2=TRUE`], priority: 101,
+          style: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF59D' } } } });
       }
     }
 
-    // EMD Exempt? column — Yes=green, No=red
-    // Use expression type (not cellIs) so CF applies to FILTER formula output cells in Google Sheets
+    // EMD Exempt? column — highest priority, column-specific via COLUMN()
     const emdExemptPos = allSheetCols.findIndex(c => c.key === 'EMD Exempt?');
     if (emdExemptPos >= 0) {
       const exCol = colNumToLetter(emdExemptPos + 1);
-      ws.addConditionalFormatting({
-        ref: `${exCol}2:${exCol}${maxRow}`,
-        rules: [
-          { type: 'expression', formulae: [`$${exCol}2="Yes"`], priority: 1,
-            style: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF2E7D32' } },
-                     font: { name: 'Calibri', size: 9, bold: true, color: { argb: 'FFFFFFFF' } } } },
-          { type: 'expression', formulae: [`$${exCol}2="No"`], priority: 2,
-            style: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFC62828' } },
-                     font: { name: 'Calibri', size: 9, bold: true, color: { argb: 'FFFFFFFF' } } } },
-        ],
-      });
+      const exColNum = emdExemptPos + 1;
+      cfRules.push({ type: 'expression', formulae: [`AND($${exCol}2="Yes",COLUMN()=${exColNum})`], priority: 1,
+        style: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF2E7D32' } },
+                 font: { name: 'Calibri', size: 9, bold: true, color: { argb: 'FFFFFFFF' } } } });
+      cfRules.push({ type: 'expression', formulae: [`AND($${exCol}2="No",COLUMN()=${exColNum})`], priority: 2,
+        style: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFC62828' } },
+                 font: { name: 'Calibri', size: 9, bold: true, color: { argb: 'FFFFFFFF' } } } });
     }
+
+    // Important tab: Filled? (col A) — highest priority, column-specific
+    if (name === 'Important') {
+      cfRules.push({ type: 'expression', formulae: ['AND($A2="Yes",COLUMN()=1)'], priority: 3,
+        style: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF2E7D32' } },
+                 font: { name: 'Calibri', size: 9, bold: true, color: { argb: 'FFFFFFFF' } } } });
+      cfRules.push({ type: 'expression', formulae: ['AND($A2="No",COLUMN()=1)'], priority: 4,
+        style: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFC62828' } },
+                 font: { name: 'Calibri', size: 9, bold: true, color: { argb: 'FFFFFFFF' } } } });
+    }
+
+    // Apply all rules in a SINGLE element — priority is guaranteed within one element
+    ws.addConditionalFormatting({ ref: `A2:${totalLastCol}${maxRow}`, rules: cfRules });
 
     // AutoFilter across all display columns (input cols A-B + formula cols C+)
     ws.autoFilter = {
@@ -1033,19 +1029,7 @@ async function buildExcel(sections) {
           `COUNTIFS(Quickman!$${tdrColInComp}$2:$${tdrColInComp}$${maxRow},r,Quickman!$A$2:$A$${maxRow},TRUE)>0,` +
           `"Yes","No"))))` };
 
-        // Green for Yes, red for No in col A
-        // Use expression type so CF works on BYROW formula output cells in Google Sheets
-        ws.addConditionalFormatting({
-          ref: `A2:A${maxRow}`,
-          rules: [
-            { type: 'expression', formulae: ['$A2="Yes"'], priority: 1,
-              style: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF2E7D32' } },
-                       font: { name: 'Calibri', size: 9, bold: true, color: { argb: 'FFFFFFFF' } } } },
-            { type: 'expression', formulae: ['$A2="No"'],  priority: 2,
-              style: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFC62828' } },
-                       font: { name: 'Calibri', size: 9, bold: true, color: { argb: 'FFFFFFFF' } } } },
-          ],
-        });
+        // Filled? Yes/No CF is now included in the main single-element CF above
       }
     }
 
