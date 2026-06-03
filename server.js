@@ -317,9 +317,9 @@ function extractEmdExemptionDirect(snippet) {
   // 0b. "EMD Exemption Allowed/Applicable: Yes" — exemption IS explicitly allowed
   //     Return the actual document text so the reason is visible in the sheet.
   const yesExemptionField = snippet.match(
-    /\bemd\s+exemption\s+(?:allowed|applicable|available)\b[^:\-\n]{0,10}[:\-=]?\s*(?:yes|applicable|allowed)\b[^\n]*/i
+    /\bemd\s+exemption\s+(?:allowed|applicable|available)\b[^:\-\n]{0,10}[:\-=]?\s*(?:yes|applicable|allowed)\b[^.\n]*/i
   );
-  if (yesExemptionField) return yesExemptionField[0].trim().slice(0, 200);
+  if (yesExemptionField) return yesExemptionField[0].trim().split(/\s+emd\s+/i)[0].trim().slice(0, 80);
 
   // 0c. Hindi/bilingual "Required: No" in EMD Detail context.
   //     pdftotext collapses all whitespace AND renders "आवश्यकता" as "आव यकता" (broken conjunct).
