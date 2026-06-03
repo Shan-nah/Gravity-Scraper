@@ -321,29 +321,27 @@ function extractEmdExemptionDirect(snippet) {
   );
   if (yesExemptionField) return yesExemptionField[0].trim().slice(0, 200);
 
-  // 0c. Hindi/bilingual "आवश्यकता/Required: No" in EMD Detail context.
-  //     pdftotext of bilingual EMD Detail table: "ईएमडी विवरण/EMD Detail … आवश्यकता/Required  No"
-  //     The snippet is EMD-specific so "Required: No" here means EMD Required = No.
-  //     Require Hindi "आवश्यकता" OR that "EMD" appears within 3 lines before "Required".
+  // 0c. Hindi/bilingual "Required: No" in EMD Detail context.
+  //     pdftotext collapses all whitespace AND renders "आवश्यकता" as "आव यकता" (broken conjunct).
+  //     After collapse: "EMD Detail आव यकता/Required No" — all on one line with spaces.
   const hindiReqNo = snippet.match(
-    /आवश्यकता\s*(?:[\/\\]\s*required)?\s*[:\-]?\s*no\b[^\n]*/i
+    /(?:आव\s*यकता|आवश्यकता)\s*[\/\\]?\s*(?:required)?\s*[:\-]?\s*no\b/i
   );
-  if (hindiReqNo) return hindiReqNo[0].trim().slice(0, 200);
-
-  // Also catch "Required No" directly after EMD Detail header (same or next line)
-  const emdDetailReqNo = snippet.match(
-    /(?:ईएमडी\s*विवरण|emd\s+detail)[^\n]{0,100}(?:\n[^\n]{0,60})?(?:\bRequired\b)\s*[:\-]?\s*No\b[^\n]*/i
-  );
-  if (emdDetailReqNo) return emdDetailReqNo[0].trim().slice(0, 200);
+  if (hindiReqNo) return (hindiReqNo[0].trim() + ' (EMD not required)').slice(0, 100);
 
   // 1. Structured table field "EMD Required: No" / "EMD: Nil" / "Earnest Money: Nil"
-  //    Requires a colon/dash separator between the field name and the value.
+  //    Note: pdftotext collapses all whitespace, so multi-line tables become single-line.
+  //    "/Required No" — the bilingual Hindi/English label after whitespace collapse.
   const nilPats = [
     /\bemd\s+(?:amount\s*)?(?:required|applicable|payable)\s*[:\-=]\s*(?:no|nil|not\s+(?:applicable|required|payable))\b[^\n]*/i,
     /\bearnest\s+money(?:\s+deposit)?\s*[:\-=]\s*(?:nil|zero|not\s+(?:required|applicable))\b[^\n]*/i,
     /\bemd\s*[:\-=]\s*(?:nil|zero|₹\s*0|rs\.?\s*0)\b[^\n]*/i,
     /\bemd\s+amount\s*[:\-=]\s*(?:nil|zero|₹?\s*0|rs\.?\s*0)\b[^\n]*/i,
     /\bno\s+emd\s+(?:is\s+)?(?:required|applicable|charged|payable)\b[^\n]*/i,
+    // Bilingual "/Required No" after whitespace collapse: "EMD Detail आव यकता/Required No"
+    /\/required\s*[:\-]?\s*no\b[^\n]*/i,
+    // "EMD Detail" section with "Required No" nearby (whitespace-collapsed pdftotext)
+    /\bemd\s+detail\b[^.]{0,200}\brequired\s+no\b/i,
   ];
   for (const pat of nilPats) {
     const m = snippet.match(pat);
